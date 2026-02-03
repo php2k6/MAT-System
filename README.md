@@ -148,7 +148,7 @@ Momentum Score = 50% × (Return_Period1 / StdDev_1Year) + 50% × (Return_Period2
 ## 🛠️ Database Design
 
 ![](context/image.png)
-![alt text](image.png)
+![](context/image-1.png)
 ---
 ## 📈 Feasibility Analysis
 
