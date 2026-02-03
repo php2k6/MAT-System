@@ -146,6 +146,11 @@ Momentum Score = 50% × (Return_Period1 / StdDev_1Year) + 50% × (Return_Period2
 
 ---
 
+## 🛠️ Database Design
+
+![](context/image.png)
+![](context/image-1.png)
+---
 ## 📈 Feasibility Analysis
 
 ### ✅ Technical Feasibility: **HIGH**
@@ -186,54 +191,6 @@ Momentum Score = 50% × (Return_Period1 / StdDev_1Year) + 50% × (Return_Period2
 
 ---
 
-## 🚀 Getting Started
-
-### Prerequisites
-```bash
-Python 3.8+
-pip or conda package manager
-Fyers trading account (for live execution)
-```
-
-### Installation
-```bash
-# Clone the repository
-git clone https://github.com/php2k6/MAT-System.git
-cd MAT-System
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the application
-python backend/main.py
-```
-
-### Configuration
-- Set up Fyers API credentials in `config.yaml`
-- Configure strategy parameters in dashboard
-- Run backtests before live deployment
-
----
-
-## 📝 Project Roadmap
-
-- [x] Project proposal and planning
-- [ ] Data ingestion module
-- [ ] Momentum algorithm implementation
-- [ ] Backtesting engine
-- [ ] Fyers API integration
-- [ ] Dashboard development
-- [ ] Testing and validation
-- [ ] Production deployment
-
----
-
-## 🤝 Contributing
-
-This is an academic project developed as part of a mini-project requirement. Contributions, suggestions, and feedback are welcome!
-
----
-
 ## ⚠️ Disclaimer
 
 This system is developed for educational and research purposes. Trading in stock markets involves substantial risk of loss. Past performance does not guarantee future results. Always conduct your own research and consider consulting with a financial advisor before making investment decisions.
@@ -248,11 +205,6 @@ For queries and collaboration:
 
 ---
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
 
 **Built with 💹 by passionate developers exploring the intersection of technology and finance**
 
