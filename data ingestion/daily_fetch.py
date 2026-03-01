@@ -3,9 +3,9 @@ import numpy as np
 import yfinance as yf
 from datetime import timedelta
 
-MASTER_CSV = "nifty250_log_return_volatility.csv"
+MASTER_CSV = "data ingestion/nifty250_log_return_volatility.csv"
 TRADING_WINDOW = 252
-
+print(MASTER_CSV)
 # ---------- Load existing master ----------
 print("Loading master CSV...")
 df = pd.read_csv(MASTER_CSV)
