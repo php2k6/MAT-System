@@ -1,7 +1,7 @@
 export default function Footer() {
     return (
       <footer style={styles.footer}>
-       © {new Date().getFullYear()} | Secure Trading Platform
+       © {new Date().getFullYear()} | MAT System
       </footer>
     );
   }
