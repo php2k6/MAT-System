@@ -3,10 +3,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     app_name: str = "MAT System"
-    database_url: str = "sqlite:///./mat_system.db"
-    
+    database_url: str
+
     class Config:
-        env_file = ".env"
+        env_file = "backend/.env"
 
 
 settings = Settings()

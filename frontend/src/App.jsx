@@ -26,7 +26,7 @@ function App() {
         {/* Routes WITH Navbar */}
         <Route element={<Layout />}>
           <Route path="/" element={<Home />} />
-          <Route path="/dashboard" element={<Home />} />
+          <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/deploy" element={<DeployStrategy />} />
 
         </Route>
