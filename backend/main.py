@@ -1,9 +1,21 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from backend.routers import strategies, backtest, portfolio
+from backend.routers import auth
 from backend.database import init_db
 
 app = FastAPI()
 
+# Validation errors → 400 with consistent shape
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=400,
+        content={"success": False, "message": "Invalid input data"},
+    )
+
+app.include_router(auth.router)
 app.include_router(strategies.router)
 app.include_router(backtest.router)
 app.include_router(portfolio.router)
