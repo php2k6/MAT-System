@@ -53,11 +53,14 @@ export default function Navbar() {
 
   const handleConnectBroker = async () => {
     try {
-      await authService.connectBroker();
-      setBrokerConnected(true);
-      navigate("/dashboard");
-    } catch {
-      console.error("Broker connection failed");
+      const res = await authService.connectBroker();
+      // The backend returns the URL for the broker's OAuth page
+      if (res.data.success && res.data.redirectUrl) {
+        // Use window.location.href to leave your app and go to the broker
+        window.location.href = res.data.redirectUrl; 
+      }
+    } catch (err) {
+      console.error("Broker connection failed", err);
     }
   };
 
