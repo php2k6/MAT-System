@@ -72,16 +72,16 @@ CONFIG = dict(
     # "nifty250" → all stocks (or index_member IN all four)
     # None       → use all symbols in the CSV (no universe filter)
 
-    universe        = "None",       # ← CHANGE THIS
+    universe        = "nifty250",       # ← CHANGE THIS
 
     # ── Portfolio Parameters ──────────────────────────────────────
-    n_stocks        = 30,               # ← No. of stocks to hold
-    max_price       = 5_000,            # ← INR price cap (set 999_999 for no cap)
+    n_stocks        = 10,               # ← No. of stocks to hold
+    max_price       = 100_000,            # ← INR price cap (set 999_999 for no cap)
     min_price       = 1.0,              # ← minimum price filter (keep 1.0)
 
     # ── Capital & Start Year ──────────────────────────────────────
-    initial_capital = 1_000_000,        # ← Starting capital in INR
-    start_year      = 2020,             # ← Backtest start year
+    initial_capital = 100_000,        # ← Starting capital in INR
+    start_year      = 2016,             # ← Backtest start year
 
     # ── Rebalance Frequency ───────────────────────────────────────
     # Number of calendar months between rebalances
@@ -90,13 +90,13 @@ CONFIG = dict(
 
     # ── Momentum Lookback Periods (calendar months) ───────────────
     # These are converted to approximate trading days internally
-    lookback_period_1_months = 6,       # ← Lookback Period 1 (months)
+    lookback_period_1_months = 3,       # ← Lookback Period 1 (months)
     lookback_period_2_months = 12,      # ← Lookback Period 2 (months)
-    skip_months              = 1,       # skip most-recent N months (reversal filter)
+    skip_months              = 0,       # skip most-recent N months (reversal filter)
 
     # ── Score Weights (must sum to 1.0) ───────────────────────────
-    weight_period_1 = 0.4,              # weight for lookback period 1
-    weight_period_2 = 0.6,              # weight for lookback period 2
+    weight_period_1 = 0.5,              # weight for lookback period 1
+    weight_period_2 = 0.5,              # weight for lookback period 2
 
     # ── Safety Cash Buffer ────────────────────────────────────────
     cash_buffer_pct = 0.005,            # 0.5% — prevents float rounding negatives
