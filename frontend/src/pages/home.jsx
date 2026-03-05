@@ -3,12 +3,14 @@ import axios from "axios";
 import AuthGate from "../components/Authgate.jsx";
 import Dashboard from "./Dashboard.jsx";
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+
 
 export default function Home() {
   const [state, setState] = useState("loading");
 
   const api = axios.create({
-    baseURL: "http://localhost:5000/api",
+    baseURL: `${API_BASE_URL}`,
     withCredentials: true
   });
 
@@ -49,7 +51,7 @@ export default function Home() {
     }
   };
 
-  // 🔥 If not ready, show AuthGate
+  // If not ready, show AuthGate
   if (state !== "ready") {
     return (
         
@@ -60,7 +62,7 @@ export default function Home() {
     );
   }
 
-  // ✅ REAL DASHBOARD CONTENT
+  // REAL DASHBOARD CONTENT
   return (
    <Dashboard/>
   );
