@@ -8,7 +8,15 @@ CSV_PATH         = "nifty250_log_return_volatility.csv"
 UNIVERSE         = "nifty250"
 INITIAL_CAPITAL  = 100_000
 START_YEAR       = 2016
-REBALANCE_MONTHS = 1
+
+# ── REBALANCE FREQUENCY ─────────────────────────────────────────
+# Set REBALANCE_FREQ to either:
+#   "monthly"  → rebalance every N months  (uses REBALANCE_MONTHS)
+#   "weekly"   → rebalance every N weeks   (uses REBALANCE_WEEKS)
+REBALANCE_FREQ   = "monthly"   # "monthly" | "weekly"
+REBALANCE_MONTHS = 1           # used when REBALANCE_FREQ == "monthly"
+REBALANCE_WEEKS  = 2           # used when REBALANCE_FREQ == "weekly"
+
 LOOKBACK_1       = 3
 LOOKBACK_2       = 12
 SKIP_MONTHS      = 0
@@ -53,8 +61,28 @@ def _max_buyable_shares(cash: float, price: float) -> int:
 
 
 def get_rebalance_dates(all_dates):
+    """
+    Returns the set of rebalance dates based on REBALANCE_FREQ:
+      - "monthly": last trading day of every N-th calendar month
+      - "weekly" : last trading day of every N-th ISO week
+    Logic is identical for both — only the bucket key differs.
+    """
     temp = pd.DataFrame({"date": pd.to_datetime(sorted(all_dates))})
-    temp["bucket"] = (temp["date"].dt.year * 12 + temp["date"].dt.month - 1) // REBALANCE_MONTHS
+
+    if REBALANCE_FREQ == "weekly":
+        # ISO week number; group every REBALANCE_WEEKS weeks
+        # Bucket = (year * 53 + week - 1) // REBALANCE_WEEKS  (53 gives safe upper bound)
+        iso = temp["date"].dt.isocalendar()
+        temp["bucket"] = (
+            (iso["year"].astype(int) * 53 + iso["week"].astype(int) - 1)
+            // REBALANCE_WEEKS
+        )
+    else:  # "monthly" (default)
+        temp["bucket"] = (
+            (temp["date"].dt.year * 12 + temp["date"].dt.month - 1)
+            // REBALANCE_MONTHS
+        )
+
     return set(temp.groupby("bucket")["date"].max())
 
 
@@ -73,8 +101,8 @@ def compute_momentum_scores(df):
     df["ret_lb2"] = (df["p_t"] / df["p_lb2"]) - 1
 
     # Risk-adjusted momentum: return / volatility for each lookback, then blended
-    df["score_1"]       = df["ret_lb1"] / df["volatility_1y"]
-    df["score_2"]       = df["ret_lb2"] / df["volatility_1y"]
+    df["score_1"]        = df["ret_lb1"] / df["volatility_1y"]
+    df["score_2"]        = df["ret_lb2"] / df["volatility_1y"]
     df["momentum_score"] = WEIGHT_1 * df["score_1"] + WEIGHT_2 * df["score_2"]
     return df
 
@@ -129,12 +157,12 @@ def run_backtest(df):
     rebalance_dates = get_rebalance_dates(all_dates)
     price_pivot     = df.pivot(index="date", columns="symbol", values="close").ffill()
 
-    cash        = float(INITIAL_CAPITAL)
-    holdings    = {}
-    last_prices = {}
-    daily_log   = []
+    cash          = float(INITIAL_CAPITAL)
+    holdings      = {}
+    last_prices   = {}
+    daily_log     = []
     rebalance_log = []
-    trade_log   = []
+    trade_log     = []
 
     for current_date in all_dates:
         today_prices = price_pivot.loc[current_date].dropna().to_dict()
@@ -145,8 +173,8 @@ def run_backtest(df):
         )
 
         if current_date in rebalance_dates:
-            pv_before  = portfolio_value
-            target_map = get_target_portfolio(current_date, df, portfolio_value)
+            pv_before    = portfolio_value
+            target_map   = get_target_portfolio(current_date, df, portfolio_value)
             new_selected = set(target_map.keys())
 
             # Sell full exits
@@ -268,11 +296,17 @@ def print_performance_report(result, rebal_df, trades_df):
     win_rate     = (rets > 0).sum() / len(rets)
     avg_cash_pct = (result["cash"] / result["portfolio_value"]).mean()
 
+    freq_label = (
+        f"Every {REBALANCE_WEEKS}W"  if REBALANCE_FREQ == "weekly"
+        else f"Every {REBALANCE_MONTHS}M"
+    )
+
     print("\n" + "=" * 62)
     print(f"{'STRATEGY PERFORMANCE REPORT':^62}")
     print("=" * 62)
     print(f"  Period          : {pv.index[0].date()} → {pv.index[-1].date()}")
     print(f"  Universe        : {UNIVERSE.upper()}")
+    print(f"  Rebalance Freq  : {REBALANCE_FREQ.capitalize()} ({freq_label})")
     print(f"  Initial Capital : ₹{INITIAL_CAPITAL:,.2f}")
     print(f"  Final Value     : ₹{pv.iloc[-1]:,.2f}")
     print("-" * 62)
@@ -316,13 +350,18 @@ def plot_results(result, out_path="backtest_chart.png"):
     drawdown = (pv - pv.cummax()) / pv.cummax()
     lakh     = 1e5
 
+    freq_label = (
+        f"Every {REBALANCE_WEEKS}W"  if REBALANCE_FREQ == "weekly"
+        else f"Every {REBALANCE_MONTHS}M"
+    )
+
     fig, axes = plt.subplots(
         4, 1, figsize=(15, 13), sharex=True,
         gridspec_kw={"height_ratios": [3, 1.5, 1.5, 1]}
     )
     fig.suptitle(
         f"NSE Momentum Strategy  |  Universe: {UNIVERSE.upper()}  "
-        f"|  Top-{N_STOCKS} Stocks  |  Monthly Rebalance\n"
+        f"|  Top-{N_STOCKS} Stocks  |  Rebalance: {REBALANCE_FREQ.capitalize()} ({freq_label})\n"
         f"Lookback: {LOOKBACK_1}M + {LOOKBACK_2}M  "
         f"|  Capital ₹{INITIAL_CAPITAL:,.0f}  |  Realistic NSE costs",
         fontsize=12, fontweight="bold", y=1.01
@@ -386,7 +425,8 @@ if __name__ == "__main__":
     scored_df = compute_momentum_scores(raw_df)
     scored_df = scored_df[scored_df["date"].dt.year >= START_YEAR].copy()
 
-    print(f"Running backtest on {UNIVERSE.upper()}...")
+    print(f"Running backtest on {UNIVERSE.upper()} "
+          f"[{REBALANCE_FREQ} rebalance]...")
     result, rebal_df, trades_df = run_backtest(scored_df)
 
     print_performance_report(result, rebal_df, trades_df)
