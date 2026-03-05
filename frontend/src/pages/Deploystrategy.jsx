@@ -6,7 +6,40 @@ import {
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
 
-// ─── Mock backtest generator ──────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// API CONFIGURATION
+// Replace these with your actual backend endpoints.
+// All API calls are routed through `strategyService` below.
+// ─────────────────────────────────────────────────────────────────────────────
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+
+// API Endpoints — update paths to match your backend routes
+const API_ENDPOINTS = {
+  backtest: `${API_BASE_URL}/api/strategy/backtest`,   // POST
+  deploy:   `${API_BASE_URL}/api/strategy/deploy`,     // POST
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ███████╗████████╗ █████╗ ████████╗██╗ ██████╗    ██████╗  █████╗ ████████╗ █████╗
+// ██╔════╝╚══██╔══╝██╔══██╗╚══██╔══╝██║██╔════╝    ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗
+// ███████╗   ██║   ███████║   ██║   ██║██║         ██║  ██║███████║   ██║   ███████║
+// ╚════██║   ██║   ██╔══██║   ██║   ██║██║         ██║  ██║██╔══██║   ██║   ██╔══██║
+// ███████║   ██║   ██║  ██║   ██║   ██║╚██████╗    ██████╔╝██║  ██║   ██║   ██║  ██║
+// ╚══════╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝ ╚═════╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
+//
+// ⚠️  REMOVE THIS ENTIRE SECTION WHEN BACKEND IS CONNECTED  ⚠️
+//
+// This block contains:
+//   1. generateMockBacktest()  — fake data generator replacing real backtest API
+//   2. Mock delays in strategyService — replace with real fetch() calls below
+//
+// HOW TO REMOVE:
+//   - Delete everything between the START and END markers below
+//   - Uncomment the real fetch() implementations in strategyService
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── STATIC DATA START ────────────────────────────────────────────────────────
+
 function generateMockBacktest(config) {
   const capital    = Number(config.capital);
   const startDate  = new Date(`${config.backtestStartYear}-01-01`);
@@ -44,7 +77,6 @@ function generateMockBacktest(config) {
     d.setDate(d.getDate() + 1);
   }
 
-  // rolling 252-day sharpe
   const W = 252;
   series.forEach((pt, i) => {
     if (i < W) return;
@@ -54,7 +86,6 @@ function generateMockBacktest(config) {
     pt.rollingSharpe = std > 0 ? +(mean / std * Math.sqrt(252)).toFixed(3) : null;
   });
 
-  // yearly returns
   const yearMap = {};
   series.forEach(pt => {
     const yr = pt.date.slice(0, 4);
@@ -76,7 +107,6 @@ function generateMockBacktest(config) {
   const winRate = dailyRets.filter(r => r > 0).length / dailyRets.length;
   const avgCash = series.reduce((a, b) => a + b.cash / b.pv, 0) / series.length;
 
-  // thin series for chart perf (every 5th point)
   const lakh = 1e5;
   const thin = series.filter((_, i) => i % 5 === 0).map(pt => ({
     ...pt,
@@ -106,19 +136,68 @@ function generateMockBacktest(config) {
   };
 }
 
-// ─── API Service ──────────────────────────────────────────────────────────────
+// ── STATIC DATA END ──────────────────────────────────────────────────────────
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// API SERVICE
+// Currently uses mock data. When backend is ready:
+//   1. Delete generateMockBacktest() above (STATIC DATA section)
+//   2. Uncomment the real fetch() blocks below
+//   3. Remove the mock `await new Promise(...)` delay lines
+//
+// Expected API contract:
+//   POST /api/strategy/backtest
+//     Body: { universe, numStocks, lookback1, lookback2, priceCap, capital,
+//             rebalanceType, rebalanceFreq, startingDate, backtestStartYear }
+//     Response: { series: [...], yearlyReturns: [...], stats: { ... } }
+//
+//   POST /api/strategy/deploy
+//     Body: { universe, numStocks, lookback1, lookback2, priceCap, capital,
+//             rebalanceType, rebalanceFreq, startingDate }
+//     Response: { success: true, strategyId: "..." }
+// ─────────────────────────────────────────────────────────────────────────────
 const strategyService = {
   backtest: async (config) => {
-    await new Promise(r => setTimeout(r, 2000));
-    return generateMockBacktest(config);
+    // ── REMOVE when backend is ready ──────────────────────────────────────────
+    await new Promise(r => setTimeout(r, 2000)); // fake network delay
+    return generateMockBacktest(config);          // fake response
+    // ── END REMOVE ────────────────────────────────────────────────────────────
+
+    // ── UNCOMMENT when backend is ready ───────────────────────────────────────
+    // const res = await fetch(API_ENDPOINTS.backtest, {
+    //   method: "POST",
+    //   headers: { "Content-Type": "application/json" },
+    //   body: JSON.stringify(config),
+    // });
+    // if (!res.ok) throw new Error(`Backtest failed: ${res.statusText}`);
+    // return res.json();
+    // ── END UNCOMMENT ─────────────────────────────────────────────────────────
   },
-  deploy: async () => {
-    await new Promise(r => setTimeout(r, 1800));
-    return { success: true };
+
+  deploy: async (config) => {
+    // ── REMOVE when backend is ready ──────────────────────────────────────────
+    await new Promise(r => setTimeout(r, 1800)); // fake network delay
+    return { success: true };                     // fake response
+    // ── END REMOVE ────────────────────────────────────────────────────────────
+
+    // ── UNCOMMENT when backend is ready ───────────────────────────────────────
+    // const res = await fetch(API_ENDPOINTS.deploy, {
+    //   method: "POST",
+    //   headers: { "Content-Type": "application/json" },
+    //   body: JSON.stringify(config),
+    // });
+    // if (!res.ok) throw new Error(`Deploy failed: ${res.statusText}`);
+    // return res.json();
+    // ── END UNCOMMENT ─────────────────────────────────────────────────────────
   },
 };
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANTS
+// These are UI-level constants (dropdown options, defaults).
+// Universe options may need to be fetched from backend if they become dynamic.
+// ─────────────────────────────────────────────────────────────────────────────
 const UNIVERSE_OPTIONS     = [
   { value: "nifty50",  label: "Nifty 50",  desc: "Large cap · 50 stocks"    },
   { value: "nifty100", label: "Nifty 100", desc: "Large cap · 100 stocks"   },
@@ -153,57 +232,64 @@ const fmt  = v => `${(v * 100).toFixed(2)}%`;
 const fmtN = (v, d = 2) => v.toFixed(d);
 const fmtC = v => `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 
-// ─── UI Primitives ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// UI PRIMITIVES
+// ─────────────────────────────────────────────────────────────────────────────
 function FieldLabel({ label, hint }) {
   return (
     <div style={{ marginBottom: 8 }}>
-      <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.35)" }}>{label}</span>
-      {hint && <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.2)", marginLeft: 8 }}>— {hint}</span>}
+      <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(255,255,255)" }}>{label}</span>
+      {hint && <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.38)", marginLeft: 8 }}>— {hint}</span>}
     </div>
   );
 }
+
 function FieldError({ msg }) {
   if (!msg) return null;
-  return <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#ff4d6d", marginTop: 6 }}>⚠ {msg}</div>;
+  return <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "#ff6b85", marginTop: 6 }}>⚠ {msg}</div>;
 }
+
 function StyledInput({ value, onChange, placeholder, prefix, suffix, error }) {
   const [f, setF] = useState(false);
   return (
-    <div style={{ display: "flex", alignItems: "center", background: "rgba(255,255,255,0.03)", border: `1px solid ${error ? "rgba(255,77,109,0.4)" : f ? "rgba(0,229,160,0.35)" : "rgba(255,255,255,0.08)"}`, borderRadius: 8, boxShadow: f ? "0 0 0 3px rgba(0,229,160,0.07)" : "none", transition: "all 0.18s" }}>
-      {prefix && <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "rgba(255,255,255,0.3)", padding: "0 0 0 14px" }}>{prefix}</span>}
+    <div style={{ display: "flex", alignItems: "center", background: "rgba(255,255,255,0.04)", border: `1px solid ${error ? "rgba(255,77,109,0.5)" : f ? "rgba(0,229,160,0.5)" : "rgba(255,255,255,0.13)"}`, borderRadius: 8, boxShadow: f ? "0 0 0 3px rgba(0,229,160,0.09)" : "none", transition: "all 0.18s" }}>
+      {prefix && <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "rgba(255,255,255,0.5)", padding: "0 0 0 14px" }}>{prefix}</span>}
       <input type="number" value={value} onChange={onChange} placeholder={placeholder} min="1"
         onFocus={() => setF(true)} onBlur={() => setF(false)}
         style={{ flex: 1, border: "none", outline: "none", background: "transparent", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, color: "#fff", padding: prefix ? "12px 14px 12px 8px" : "12px 14px", letterSpacing: "0.03em" }} />
-      {suffix && <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.25)", padding: "0 14px 0 0" }}>{suffix}</span>}
+      {suffix && <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.45)", padding: "0 14px 0 0" }}>{suffix}</span>}
     </div>
   );
 }
+
 function SelectInput({ value, onChange, options, error }) {
   const [f, setF] = useState(false);
   return (
-    <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${error ? "rgba(255,77,109,0.4)" : f ? "rgba(0,229,160,0.35)" : "rgba(255,255,255,0.08)"}`, borderRadius: 8, position: "relative", boxShadow: f ? "0 0 0 3px rgba(0,229,160,0.07)" : "none", transition: "all 0.18s" }}>
+    <div style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${error ? "rgba(255,77,109,0.5)" : f ? "rgba(0,229,160,0.5)" : "rgba(255,255,255,0.13)"}`, borderRadius: 8, position: "relative", boxShadow: f ? "0 0 0 3px rgba(0,229,160,0.09)" : "none", transition: "all 0.18s" }}>
       <select value={value} onChange={onChange} onFocus={() => setF(true)} onBlur={() => setF(false)}
         style={{ width: "100%", border: "none", outline: "none", background: "transparent", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#fff", padding: "12px 36px 12px 14px", appearance: "none", cursor: "pointer" }}>
         {options.map(o => (
           <option key={o.value ?? o} value={o.value ?? o} style={{ background: "#0d1526", color: "#fff" }}>{o.label ?? o}</option>
         ))}
       </select>
-      <span style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", color: "rgba(255,255,255,0.3)", fontSize: 10, pointerEvents: "none" }}>▼</span>
+      <span style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", color: "rgba(255,255,255,0.5)", fontSize: 10, pointerEvents: "none" }}>▼</span>
     </div>
   );
 }
 
-// ─── Backtest Year Modal ───────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// BACKTEST YEAR MODAL
+// ─────────────────────────────────────────────────────────────────────────────
 function BacktestYearModal({ initialYear, onConfirm, onCancel }) {
   const [year, setYear] = useState(initialYear);
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.78)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.82)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <div style={{ background: "#080e1c", border: "1px solid rgba(0,229,160,0.2)", borderRadius: 18, padding: "32px 32px 28px", width: "100%", maxWidth: 460, boxShadow: "0 0 80px rgba(0,229,160,0.07), 0 24px 60px rgba(0,0,0,0.7)", position: "relative" }}>
         <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1, background: "linear-gradient(90deg, transparent, rgba(0,229,160,0.45), transparent)", borderRadius: "18px 18px 0 0" }} />
 
-        <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, letterSpacing: "0.22em", color: "rgba(0,229,160,0.55)", textTransform: "uppercase", marginBottom: 8 }}>// Configure Backtest</div>
+        <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, letterSpacing: "0.2em", color: "rgba(0,229,160,0.7)", textTransform: "uppercase", marginBottom: 8 }}>// Configure Backtest</div>
         <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 24, fontWeight: 800, color: "#fff", marginBottom: 6 }}>Select Starting Year</div>
-        <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.28)", lineHeight: 1.65, marginBottom: 28 }}>
+        <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11.5, color: "rgba(255,255,255,0.48)", lineHeight: 1.7, marginBottom: 28 }}>
           Backtest will simulate the strategy from Jan 1 of the selected year through today. Longer periods yield more statistically robust results.
         </div>
 
@@ -212,24 +298,24 @@ function BacktestYearModal({ initialYear, onConfirm, onCancel }) {
           {BACKTEST_YEAR_OPTIONS.map(y => (
             <div key={y} onClick={() => setYear(y)} style={{
               padding: "10px 4px", textAlign: "center", borderRadius: 8, cursor: "pointer",
-              border: `1px solid ${year === y ? "rgba(0,229,160,0.55)" : "rgba(255,255,255,0.06)"}`,
-              background: year === y ? "rgba(0,229,160,0.12)" : "rgba(255,255,255,0.02)",
+              border: `1px solid ${year === y ? "rgba(0,229,160,0.6)" : "rgba(255,255,255,0.1)"}`,
+              background: year === y ? "rgba(0,229,160,0.13)" : "rgba(255,255,255,0.03)",
               fontFamily: "'JetBrains Mono',monospace",
               fontSize: 12, fontWeight: year === y ? 700 : 400,
-              color: year === y ? "#00e5a0" : "rgba(255,255,255,0.4)",
+              color: year === y ? "#00e5a0" : "rgba(255,255,255,0.6)",
               transition: "all 0.14s", userSelect: "none",
             }}>{y}</div>
           ))}
         </div>
 
         {/* Info strip */}
-        <div style={{ background: "rgba(0,229,160,0.05)", border: "1px solid rgba(0,229,160,0.12)", borderRadius: 8, padding: "10px 14px", marginBottom: 24, fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.38)", display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ color: "rgba(0,229,160,0.6)" }}>◈</span>
-          From <span style={{ color: "#00e5a0", margin: "0 4px" }}>{year}</span> → <span style={{ color: "#00e5a0", margin: "0 4px" }}>{CURRENT_YEAR}</span> · ~<span style={{ color: "#00e5a0", margin: "0 4px" }}>{CURRENT_YEAR - year} years</span> of data
+        <div style={{ background: "rgba(0,229,160,0.06)", border: "1px solid rgba(0,229,160,0.15)", borderRadius: 8, padding: "10px 14px", marginBottom: 24, fontFamily: "'JetBrains Mono',monospace", fontSize: 12, color: "rgba(255,255,255,0.55)", display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ color: "rgba(0,229,160,0.75)" }}>◈</span>
+          From <span style={{ color: "#00e5a0", margin: "0 4px", fontWeight: 700 }}>{year}</span> → <span style={{ color: "#00e5a0", margin: "0 4px", fontWeight: 700 }}>{CURRENT_YEAR}</span> · ~<span style={{ color: "#00e5a0", margin: "0 4px", fontWeight: 700 }}>{CURRENT_YEAR - year} years</span> of data
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={onCancel} style={{ flex: 1, padding: "13px", borderRadius: 9, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", fontFamily: "'Syne',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.45)", cursor: "pointer" }}>
+          <button onClick={onCancel} style={{ flex: 1, padding: "13px", borderRadius: 9, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", fontFamily: "'Syne',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.65)", cursor: "pointer" }}>
             Cancel
           </button>
           <button onClick={() => onConfirm(year)} style={{ flex: 2, padding: "13px", borderRadius: 9, border: "none", background: "linear-gradient(135deg, #00e5a0, #00c98c)", fontFamily: "'Syne',sans-serif", fontSize: 12, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#060a12", cursor: "pointer", boxShadow: "0 4px 24px rgba(0,229,160,0.3)" }}>
@@ -241,12 +327,14 @@ function BacktestYearModal({ initialYear, onConfirm, onCancel }) {
   );
 }
 
-// ─── Custom Tooltip ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// CHART TOOLTIP
+// ─────────────────────────────────────────────────────────────────────────────
 function ChartTip({ active, payload, label, suffix = "", decimals = 2 }) {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background: "#080e1c", border: "1px solid rgba(0,229,160,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 0 }}>
-      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.35)", marginBottom: 5 }}>{label}</div>
+    <div style={{ background: "#080e1c", border: "1px solid rgba(0,229,160,0.25)", borderRadius: 8, padding: "8px 12px", fontSize: 0 }}>
+      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.55)", marginBottom: 5 }}>{label}</div>
       {payload.map((p, i) => p.value != null && (
         <div key={i} style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: p.color || "#00e5a0", marginBottom: 2 }}>
           {p.name}: {typeof p.value === "number" ? p.value.toFixed(decimals) : p.value}{suffix}
@@ -256,7 +344,10 @@ function ChartTip({ active, payload, label, suffix = "", decimals = 2 }) {
   );
 }
 
-// ─── Stats Table ──────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// STATS TABLE
+// Receives data from API response (result.stats). No changes needed for backend.
+// ─────────────────────────────────────────────────────────────────────────────
 function StatsTable({ stats, startYear }) {
   const rows = [
     { label: "Universe",         value: stats.universe },
@@ -264,33 +355,33 @@ function StatsTable({ stats, startYear }) {
     { label: "Initial Capital",  value: fmtC(stats.initialCap) },
     { label: "Final Value",      value: fmtC(stats.finalValue),     color: "#00e5a0" },
     null,
-    { label: "Total Return",     value: fmt(stats.totalReturn),     color: stats.totalReturn >= 0 ? "#00e5a0" : "#ff4d6d" },
-    { label: "CAGR",             value: fmt(stats.cagr),            color: stats.cagr >= 0 ? "#00e5a0" : "#ff4d6d" },
+    { label: "Total Return",     value: fmt(stats.totalReturn),     color: stats.totalReturn >= 0 ? "#00e5a0" : "#ff6b85" },
+    { label: "CAGR",             value: fmt(stats.cagr),            color: stats.cagr >= 0 ? "#00e5a0" : "#ff6b85" },
     { label: "Ann. Volatility",  value: fmt(stats.vol) },
-    { label: "Sharpe Ratio",     value: fmtN(stats.sharpe),         color: stats.sharpe >= 1 ? "#00e5a0" : stats.sharpe >= 0 ? "#f0c040" : "#ff4d6d" },
-    { label: "Max Drawdown",     value: fmt(stats.maxDrawdown),     color: "#ff4d6d" },
-    { label: "Calmar Ratio",     value: fmtN(stats.calmar),         color: stats.calmar >= 0.5 ? "#00e5a0" : "#f0c040" },
+    { label: "Sharpe Ratio",     value: fmtN(stats.sharpe),         color: stats.sharpe >= 1 ? "#00e5a0" : stats.sharpe >= 0 ? "#f5c842" : "#ff6b85" },
+    { label: "Max Drawdown",     value: fmt(stats.maxDrawdown),     color: "#ff6b85" },
+    { label: "Calmar Ratio",     value: fmtN(stats.calmar),         color: stats.calmar >= 0.5 ? "#00e5a0" : "#f5c842" },
     null,
     { label: "Win Rate (Daily)", value: fmt(stats.winRate) },
     { label: "Best Day",         value: fmt(stats.bestDay),         color: "#00e5a0" },
-    { label: "Worst Day",        value: fmt(stats.worstDay),        color: "#ff4d6d" },
+    { label: "Worst Day",        value: fmt(stats.worstDay),        color: "#ff6b85" },
     { label: "Avg Cash Drag",    value: fmt(stats.avgCashDrag) },
   ];
 
   return (
-    <div style={{ background: "rgba(10,16,30,0.9)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, overflow: "hidden" }}>
-      <div style={{ padding: "13px 20px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#00e5a0", background: "rgba(0,229,160,0.1)", padding: "2px 8px", borderRadius: 4, letterSpacing: "0.06em" }}>STATS</span>
-        <span style={{ fontFamily: "'Syne',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.5)" }}>Performance Summary</span>
+    <div style={{ background: "rgba(10,16,30,0.9)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ padding: "13px 20px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#00e5a0", background: "rgba(0,229,160,0.12)", padding: "2px 8px", borderRadius: 4, letterSpacing: "0.06em" }}>STATS</span>
+        <span style={{ fontFamily: "'Syne',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.7)" }}>Performance Summary</span>
       </div>
       <div style={{ padding: "6px 0" }}>
         {rows.map((row, i) =>
           row === null ? (
-            <div key={`sep${i}`} style={{ height: 1, background: "rgba(255,255,255,0.05)", margin: "5px 20px" }} />
+            <div key={`sep${i}`} style={{ height: 1, background: "rgba(255,255,255,0.07)", margin: "5px 20px" }} />
           ) : (
-            <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 20px", background: i % 2 === 0 ? "rgba(255,255,255,0.01)" : "transparent" }}>
-              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.35)", letterSpacing: "0.04em" }}>{row.label}</span>
-              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12, fontWeight: 600, color: row.color || "rgba(255,255,255,0.75)" }}>{row.value}</span>
+            <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 20px", background: i % 2 === 0 ? "rgba(255,255,255,0.02)" : "transparent" }}>
+              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.55)", letterSpacing: "0.04em" }}>{row.label}</span>
+              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12, fontWeight: 600, color: row.color || "rgba(255,255,255,0.9)" }}>{row.value}</span>
             </div>
           )
         )}
@@ -299,34 +390,40 @@ function StatsTable({ stats, startYear }) {
   );
 }
 
-// ─── Chart wrapper ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// CHART WRAPPER
+// ─────────────────────────────────────────────────────────────────────────────
 function ChartCard({ num, title, height = 190, children }) {
   return (
-    <div style={{ background: "rgba(10,16,30,0.9)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, overflow: "hidden", marginBottom: 12, position: "relative" }}>
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1, background: "linear-gradient(90deg, transparent, rgba(0,229,160,0.18), transparent)" }} />
-      <div style={{ padding: "11px 18px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#00e5a0", background: "rgba(0,229,160,0.1)", padding: "2px 8px", borderRadius: 4 }}>{num}</span>
-        <span style={{ fontFamily: "'Syne',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "rgba(255,255,255,0.48)" }}>{title}</span>
+    <div style={{ background: "rgba(10,16,30,0.9)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, overflow: "hidden", marginBottom: 12, position: "relative" }}>
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1, background: "linear-gradient(90deg, transparent, rgba(0,229,160,0.22), transparent)" }} />
+      <div style={{ padding: "11px 18px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#00e5a0", background: "rgba(0,229,160,0.12)", padding: "2px 8px", borderRadius: 4 }}>{num}</span>
+        <span style={{ fontFamily: "'Syne',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "rgba(255,255,255,0.7)" }}>{title}</span>
       </div>
       <div style={{ padding: "12px 6px 8px", height }}>{children}</div>
     </div>
   );
 }
 
-// ─── Backtest Result ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// BACKTEST RESULT
+// Renders charts from API response. result shape must match:
+//   { series: [...], stats: { ... } }
+// ─────────────────────────────────────────────────────────────────────────────
 function BacktestResult({ result, config, visible }) {
   const { series, stats } = result;
 
   const xProps = {
     dataKey: "date",
-    tick: { fontFamily: "'JetBrains Mono',monospace", fontSize: 9, fill: "rgba(255,255,255,0.22)" },
+    tick: { fontFamily: "'JetBrains Mono',monospace", fontSize: 9, fill: "rgba(255,255,255,0.45)" },
     tickFormatter: v => v ? v.slice(0, 4) : "",
     interval: Math.floor(series.length / 6),
-    axisLine: { stroke: "rgba(255,255,255,0.06)" },
+    axisLine: { stroke: "rgba(255,255,255,0.08)" },
     tickLine: false,
   };
-  const yStyle = { fontFamily: "'JetBrains Mono',monospace", fontSize: 9, fill: "rgba(255,255,255,0.22)" };
-  const grid   = { stroke: "rgba(255,255,255,0.04)", strokeDasharray: "3 3" };
+  const yStyle = { fontFamily: "'JetBrains Mono',monospace", fontSize: 9, fill: "rgba(255,255,255,0.45)" };
+  const grid   = { stroke: "rgba(255,255,255,0.05)", strokeDasharray: "3 3" };
 
   return (
     <div style={{ marginTop: 28, opacity: visible ? 1 : 0, transform: visible ? "translateY(0)" : "translateY(20px)", transition: "opacity 0.5s ease, transform 0.5s cubic-bezier(0.16,1,0.3,1)" }}>
@@ -334,8 +431,8 @@ function BacktestResult({ result, config, visible }) {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
         <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#00e5a0", boxShadow: "0 0 12px rgba(0,229,160,0.7)", animation: "bpulse 2s ease-in-out infinite" }} />
-        <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, letterSpacing: "0.18em", color: "rgba(0,229,160,0.6)", textTransform: "uppercase" }}>// Backtest Results · {config.backtestStartYear} – {CURRENT_YEAR}</span>
-        <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg, rgba(0,229,160,0.25), transparent)" }} />
+        <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, letterSpacing: "0.18em", color: "rgba(0,229,160,0.75)", textTransform: "uppercase" }}>// Backtest Results · {config.backtestStartYear} – {CURRENT_YEAR}</span>
+        <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg, rgba(0,229,160,0.3), transparent)" }} />
       </div>
 
       {/* Stats table */}
@@ -361,7 +458,7 @@ function BacktestResult({ result, config, visible }) {
             <XAxis {...xProps} />
             <YAxis tick={yStyle} tickFormatter={v => `₹${v.toFixed(0)}L`} axisLine={false} tickLine={false} width={56} />
             <Tooltip content={<ChartTip suffix="L" decimals={2} />} />
-            <Legend wrapperStyle={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.35)" }} />
+            <Legend wrapperStyle={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.6)" }} />
             <Area type="monotone" dataKey="investedL" name="Invested" stackId="1" stroke="#4C72B0" fill="url(#gInv)" strokeWidth={1.5} dot={false} />
             <Area type="monotone" dataKey="cashL"     name="Cash"     stackId="1" stroke="#7aafc8" fill="url(#gCash)" strokeWidth={1} dot={false} />
             <Area type="monotone" dataKey="pvL"       name="Total NAV" stroke="#00e5a0" fill="none" strokeWidth={2.2} dot={false} />
@@ -383,7 +480,7 @@ function BacktestResult({ result, config, visible }) {
             <XAxis {...xProps} />
             <YAxis tick={yStyle} tickFormatter={v => `${v.toFixed(1)}%`} axisLine={false} tickLine={false} width={46} />
             <Tooltip content={<ChartTip suffix="%" decimals={2} />} />
-            <ReferenceLine y={0} stroke="rgba(255,255,255,0.14)" />
+            <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" />
             <Area type="monotone" dataKey="drawdown" name="Drawdown" stroke="#d62728" fill="url(#gDd)" strokeWidth={1.5} dot={false} />
           </AreaChart>
         </ResponsiveContainer>
@@ -397,8 +494,8 @@ function BacktestResult({ result, config, visible }) {
             <XAxis {...xProps} />
             <YAxis tick={yStyle} tickFormatter={v => v.toFixed(1)} axisLine={false} tickLine={false} width={36} />
             <Tooltip content={<ChartTip decimals={2} />} />
-            <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 3" />
-            <ReferenceLine y={1} stroke="rgba(0,229,160,0.22)" strokeDasharray="4 3" />
+            <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 3" />
+            <ReferenceLine y={1} stroke="rgba(0,229,160,0.28)" strokeDasharray="4 3" />
             <Line type="monotone" dataKey="rollingSharpe" name="Sharpe (1Y)" stroke="#2ca02c" strokeWidth={1.5} dot={false} connectNulls={false} />
           </ComposedChart>
         </ResponsiveContainer>
@@ -427,7 +524,9 @@ function BacktestResult({ result, config, visible }) {
   );
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN COMPONENT
+// ─────────────────────────────────────────────────────────────────────────────
 export default function DeployStrategy() {
   const navigate = useNavigate();
   const [form, setForm]             = useState(DEFAULT_FORM);
@@ -456,6 +555,7 @@ export default function DeployStrategy() {
     setShowYearModal(true);
   };
 
+  // API call: POST /api/strategy/backtest
   const runBacktest = async (year) => {
     setShowYearModal(false);
     const config = { ...form, backtestStartYear: year };
@@ -469,12 +569,15 @@ export default function DeployStrategy() {
       setTimeout(() => setResultVisible(true), 80);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 220);
     } catch (err) {
-      console.error(err);
+      // TODO: show error toast / notification to user
+      console.error("Backtest error:", err);
     } finally {
       setBtLoading(false);
     }
   };
 
+  // API call: POST /api/strategy/deploy
+  // On success, navigate to dashboard. On failure, show error.
   const handleDeploy = async () => {
     const errs = validate(form);
     if (Object.keys(errs).length) { setErrors(errs); return; }
@@ -483,7 +586,8 @@ export default function DeployStrategy() {
       await strategyService.deploy(form);
       navigate("/dashboard");
     } catch (err) {
-      console.error(err);
+      // TODO: show error toast / notification to user
+      console.error("Deploy error:", err);
     } finally {
       setDepLoading(false);
     }
@@ -505,38 +609,40 @@ export default function DeployStrategy() {
         }
         .dp-root::before {
           content: ''; position: fixed; inset: 0; pointer-events: none;
-          background-image: linear-gradient(rgba(0,229,160,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(0,229,160,0.025) 1px, transparent 1px);
+          background-image:
+            linear-gradient(rgba(0,229,160,0.03) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(0,229,160,0.03) 1px, transparent 1px);
           background-size: 40px 40px;
         }
         .dp-wrap { max-width: 760px; margin: 0 auto; opacity: 0; transform: translateY(16px); transition: opacity 0.45s ease, transform 0.45s cubic-bezier(0.16,1,0.3,1); }
         .dp-wrap.mounted { opacity: 1; transform: translateY(0); }
 
-        .dp-page-sub { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.2em; color: rgba(0,229,160,0.55); text-transform: uppercase; margin-bottom: 6px; }
+        .dp-page-sub   { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.18em; color: rgba(0,229,160,0.75); text-transform: uppercase; margin-bottom: 6px; }
         .dp-page-title { font-size: 28px; font-weight: 800; color: #fff; margin-bottom: 6px; }
-        .dp-page-desc { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: rgba(255,255,255,0.28); letter-spacing: 0.04em; margin-bottom: 36px; line-height: 1.6; }
+        .dp-page-desc  { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: rgba(255,255,255,0.48); letter-spacing: 0.04em; margin-bottom: 36px; line-height: 1.65; }
 
-        .dp-card { background: rgba(10,16,30,0.88); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; overflow: hidden; margin-bottom: 16px; position: relative; }
-        .dp-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(0,229,160,0.2), transparent); }
-        .dp-card-header { padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; gap: 10px; }
-        .dp-card-num { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #00e5a0; background: rgba(0,229,160,0.1); padding: 2px 8px; border-radius: 4px; letter-spacing: 0.08em; }
-        .dp-card-title { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.6); }
-        .dp-card-body { padding: 22px 24px; }
+        .dp-card { background: rgba(10,16,30,0.88); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; overflow: hidden; margin-bottom: 16px; position: relative; }
+        .dp-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(0,229,160,0.25), transparent); }
+        .dp-card-header { padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,0.07); display: flex; align-items: center; gap: 10px; }
+        .dp-card-num   { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #00e5a0; background: rgba(0,229,160,0.12); padding: 2px 8px; border-radius: 4px; letter-spacing: 0.08em; }
+        .dp-card-title { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.75); }
+        .dp-card-body  { padding: 22px 24px; }
 
         .dp-universe-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         @media (max-width: 600px) { .dp-universe-grid { grid-template-columns: repeat(2, 1fr); } .dp-root { padding: 24px 20px 80px; } }
-        .dp-universe-opt { padding: 14px 12px; border-radius: 10px; cursor: pointer; border: 1px solid rgba(255,255,255,0.07); background: rgba(255,255,255,0.02); text-align: center; transition: all 0.18s; user-select: none; }
-        .dp-universe-opt:hover { border-color: rgba(0,229,160,0.2); background: rgba(0,229,160,0.03); }
-        .dp-universe-opt.selected { border-color: rgba(0,229,160,0.45); background: rgba(0,229,160,0.07); box-shadow: 0 0 0 2px rgba(0,229,160,0.08); }
+        .dp-universe-opt { padding: 14px 12px; border-radius: 10px; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); text-align: center; transition: all 0.18s; user-select: none; }
+        .dp-universe-opt:hover { border-color: rgba(0,229,160,0.28); background: rgba(0,229,160,0.04); }
+        .dp-universe-opt.selected { border-color: rgba(0,229,160,0.55); background: rgba(0,229,160,0.09); box-shadow: 0 0 0 2px rgba(0,229,160,0.1); }
         .dp-universe-label { font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px; }
         .dp-universe-opt.selected .dp-universe-label { color: #00e5a0; }
-        .dp-universe-desc { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.25); }
+        .dp-universe-desc { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.45); }
 
         .dp-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         @media (max-width: 520px) { .dp-grid-2 { grid-template-columns: 1fr; } }
 
-        .dp-type-toggle { display: flex; border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); margin-bottom: 20px; }
-        .dp-type-btn { flex: 1; padding: 12px 20px; font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px; background: transparent; color: rgba(255,255,255,0.35); }
-        .dp-type-btn:first-child { border-right: 1px solid rgba(255,255,255,0.06); }
+        .dp-type-toggle { display: flex; border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); margin-bottom: 20px; }
+        .dp-type-btn { flex: 1; padding: 12px 20px; font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; border: none; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px; background: transparent; color: rgba(255,255,255,0.5); }
+        .dp-type-btn:first-child { border-right: 1px solid rgba(255,255,255,0.08); }
         .dp-type-btn.active { background: rgba(0,229,160,0.1); color: #00e5a0; }
 
         .dp-freq-sub { animation: fadeSlideIn 0.25s ease forwards; }
@@ -545,8 +651,8 @@ export default function DeployStrategy() {
         .dp-actions { display: flex; gap: 12px; margin-top: 28px; flex-wrap: wrap; }
         .dp-btn { flex: 1; min-width: 160px; font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 14px 20px; border-radius: 10px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.18s; }
         .dp-btn:disabled { opacity: 0.55; cursor: not-allowed; }
-        .dp-btn-ghost { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.65); border: 1px solid rgba(255,255,255,0.1); }
-        .dp-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: #fff; }
+        .dp-btn-ghost { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.8); border: 1px solid rgba(255,255,255,0.15); }
+        .dp-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.09); color: #fff; }
         .dp-btn-primary { background: linear-gradient(135deg, #00e5a0, #00c98c); color: #060a12; box-shadow: 0 4px 20px rgba(0,229,160,0.22); }
         .dp-btn-primary:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); box-shadow: 0 8px 28px rgba(0,229,160,0.3); }
         .dp-btn-primary:active:not(:disabled) { transform: translateY(0); }
@@ -557,12 +663,18 @@ export default function DeployStrategy() {
         .dp-dots span:nth-child(3) { animation-delay: 0.3s; }
         @keyframes dpDot { 0%,80%,100%{transform:scale(1);opacity:0.5} 40%{transform:scale(1.4);opacity:1} }
 
-        .dp-info-strip { display: flex; align-items: flex-start; gap: 10px; background: rgba(0,229,160,0.05); border: 1px solid rgba(0,229,160,0.12); border-radius: 8px; padding: 12px 14px; margin-top: 16px; }
-        .dp-info-icon { font-size: 13px; color: rgba(0,229,160,0.6); flex-shrink: 0; margin-top: 1px; }
-        .dp-info-text { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: rgba(255,255,255,0.32); line-height: 1.65; }
-        .dp-info-text strong { color: rgba(255,255,255,0.55); font-weight: 500; }
+        .dp-info-strip { display: flex; align-items: flex-start; gap: 10px; background: rgba(0,229,160,0.05); border: 1px solid rgba(0,229,160,0.15); border-radius: 8px; padding: 12px 14px; margin-top: 16px; }
+        .dp-info-icon  { font-size: 13px; color: rgba(0,229,160,0.75); flex-shrink: 0; margin-top: 1px; }
+        .dp-info-text  { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: rgba(255,255,255,0.55); line-height: 1.65; }
+        .dp-info-text strong { color: rgba(255,255,255,0.85); font-weight: 600; }
 
-        @keyframes bpulse { 0%,100%{opacity:1;box-shadow:0 0 12px rgba(0,229,160,0.7)} 50%{opacity:0.5;box-shadow:0 0 4px rgba(0,229,160,0.2)} }
+        .dp-summary-key { font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255,255,255,0.42); margin-bottom: 3px; }
+        .dp-summary-val { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #00e5a0; font-weight: 500; }
+
+        @keyframes bpulse {
+          0%,100% { opacity:1; box-shadow:0 0 12px rgba(0,229,160,0.7) }
+          50%      { opacity:0.5; box-shadow:0 0 4px rgba(0,229,160,0.2) }
+        }
       `}</style>
 
       {showYearModal && (
@@ -579,7 +691,8 @@ export default function DeployStrategy() {
           <div className="dp-page-title">Deploy Strategy</div>
           <div className="dp-page-desc">Configure your momentum strategy parameters before backtesting or going live.</div>
 
-          {/* 01 Universe */}
+          {/* ── Section 01: Stock Universe ──────────────────────────────────── */}
+          {/* API TODO: fetch universe list from GET /api/universes if dynamic   */}
           <div className="dp-card">
             <div className="dp-card-header"><span className="dp-card-num">01</span><span className="dp-card-title">Stock Universe</span></div>
             <div className="dp-card-body">
@@ -597,7 +710,7 @@ export default function DeployStrategy() {
             </div>
           </div>
 
-          {/* 02 Portfolio */}
+          {/* ── Section 02: Portfolio Parameters ───────────────────────────── */}
           <div className="dp-card">
             <div className="dp-card-header"><span className="dp-card-num">02</span><span className="dp-card-title">Portfolio Parameters</span></div>
             <div className="dp-card-body">
@@ -615,7 +728,7 @@ export default function DeployStrategy() {
             </div>
           </div>
 
-          {/* 03 Lookback */}
+          {/* ── Section 03: Lookback Periods ────────────────────────────────── */}
           <div className="dp-card">
             <div className="dp-card-header"><span className="dp-card-num">03</span><span className="dp-card-title">Lookback Periods</span></div>
             <div className="dp-card-body">
@@ -638,7 +751,7 @@ export default function DeployStrategy() {
             </div>
           </div>
 
-          {/* 04 Capital & Rebalance */}
+          {/* ── Section 04: Capital & Rebalancing ──────────────────────────── */}
           <div className="dp-card">
             <div className="dp-card-header"><span className="dp-card-num">04</span><span className="dp-card-title">Capital & Rebalancing</span></div>
             <div className="dp-card-body">
@@ -663,7 +776,7 @@ export default function DeployStrategy() {
                   </div>
                   <div>
                     <FieldLabel label="Starting Date" hint="first rebalance date" />
-                    <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8 }}>
+                    <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.13)", borderRadius: 8 }}>
                       <input type="date" value={form.startingDate} onChange={set("startingDate")} min={TODAY}
                         style={{ width: "100%", border: "none", outline: "none", background: "transparent", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#fff", padding: "11px 14px", cursor: "pointer", colorScheme: "dark" }} />
                     </div>
@@ -680,9 +793,9 @@ export default function DeployStrategy() {
             </div>
           </div>
 
-          {/* Config Summary */}
+          {/* ── Config Summary Strip ─────────────────────────────────────────── */}
           {form.capital && form.numStocks && (
-            <div style={{ background: "rgba(0,229,160,0.04)", border: "1px solid rgba(0,229,160,0.1)", borderRadius: 10, padding: "14px 20px", display: "flex", gap: 24, flexWrap: "wrap" }}>
+            <div style={{ background: "rgba(0,229,160,0.05)", border: "1px solid rgba(0,229,160,0.13)", borderRadius: 10, padding: "14px 20px", display: "flex", gap: 24, flexWrap: "wrap" }}>
               {[
                 ["Universe", UNIVERSE_OPTIONS.find(o => o.value === form.universe)?.label],
                 ["Stocks",   form.numStocks],
@@ -694,14 +807,16 @@ export default function DeployStrategy() {
                 ["Price Cap",form.priceCap ? `₹${Number(form.priceCap).toLocaleString("en-IN")}` : "None"],
               ].map(([k, v]) => (
                 <div key={k}>
-                  <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.25)", marginBottom: 3 }}>{k}</div>
-                  <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#00e5a0", fontWeight: 500 }}>{v}</div>
+                  <div className="dp-summary-key">{k}</div>
+                  <div className="dp-summary-val">{v}</div>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Buttons */}
+          {/* ── Action Buttons ───────────────────────────────────────────────── */}
+          {/* Backtest → POST /api/strategy/backtest                             */}
+          {/* Deploy   → POST /api/strategy/deploy → navigate("/dashboard")     */}
           <div className="dp-actions">
             <button className="dp-btn dp-btn-ghost" onClick={handleBacktestClick} disabled={anyLoading}>
               {btLoading ? <><span>Running</span><div className="dp-dots"><span/><span/><span/></div></> : <><span>⟳</span> Backtest</>}
@@ -711,7 +826,8 @@ export default function DeployStrategy() {
             </button>
           </div>
 
-          {/* Results */}
+          {/* ── Backtest Results ─────────────────────────────────────────────── */}
+          {/* Populated from strategyService.backtest() response               */}
           <div ref={resultRef}>
             {backtestResult && backtestConfig && (
               <BacktestResult result={backtestResult} config={backtestConfig} visible={resultVisible} />
