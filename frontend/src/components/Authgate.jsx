@@ -1,27 +1,29 @@
 import { useNavigate } from "react-router-dom";
 
+const SYS  = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif`;
+const MONO = `'Courier New', Courier, monospace`;
 
 const STATES = {
   loading: {
     icon: null,
-    label: "INITIALIZING",
+    label: "Initializing",
     title: "Loading Terminal",
     description: "Checking your session and broker connection...",
     action: null,
   },
   unauthenticated: {
     icon: "⬡",
-    label: "NOT AUTHENTICATED",
+    label: "Not Authenticated",
     title: "Access Restricted",
     description: "You need to sign in to access the trading dashboard.",
-    action: { label: "Sign In", to: "/login", variant: "primary" },
+    action: { label: "Sign In", to: "/login" },
   },
   "no-broker": {
     icon: "⬡",
-    label: "BROKER OFFLINE",
+    label: "Broker Offline",
     title: "No Broker Connected",
     description: "Connect your broker to start using the MAT trading engine.",
-    action: { label: "Connect Broker", to: null, variant: "primary" },
+    action: { label: "Connect Broker", to: null },
   },
 };
 
@@ -38,168 +40,115 @@ export default function AuthGate({ state = "unauthenticated", onConnectBroker })
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         .ag-wrap {
-          min-height: calc(100vh - 60px);
-          background: #060a12;
+          min-height: calc(100vh - 56px);
+          background: #f2f2f2;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-family: 'Syne', sans-serif;
-          position: relative;
-          overflow: hidden;
-        }
-
-        /* Subtle grid */
-        .ag-wrap::before {
-          content: '';
-          position: absolute; inset: 0;
-          background-image:
-            linear-gradient(rgba(0,229,160,0.03) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(0,229,160,0.03) 1px, transparent 1px);
-          background-size: 40px 40px;
-        }
-
-        /* Center glow */
-        .ag-wrap::after {
-          content: '';
-          position: absolute; inset: 0;
-          background: radial-gradient(ellipse 50% 40% at 50% 50%, rgba(0,229,160,0.05) 0%, transparent 70%);
-          pointer-events: none;
+          font-family: ${SYS};
+          padding: 32px 20px;
         }
 
         .ag-box {
-          position: relative; z-index: 1;
+          background: #fff;
+          border: 1px solid #e0e0e0;
+          border-radius: 10px;
+          padding: 36px 32px 32px;
           text-align: center;
-          max-width: 380px;
-          padding: 24px;
+          max-width: 400px;
+          width: 100%;
         }
 
-        /* Icon ring */
         .ag-icon-ring {
-          width: 72px; height: 72px;
+          width: 60px; height: 60px;
           border-radius: 50%;
-          border: 1px solid rgba(0,229,160,0.2);
+          border: 1.5px solid #e0e0e0;
+          background: #f5f5f5;
           display: flex; align-items: center; justify-content: center;
-          margin: 0 auto 24px;
-          position: relative;
-          background: rgba(0,229,160,0.04);
-        }
-        .ag-icon-ring::before {
-          content: '';
-          position: absolute; inset: -6px;
-          border-radius: 50%;
-          border: 1px solid rgba(0,229,160,0.08);
+          margin: 0 auto 20px;
         }
         .ag-icon {
-          font-size: 28px;
-          color: rgba(0,229,160,0.5);
+          font-size: 22px;
+          color: #888;
         }
 
-        /* Loading spinner */
         .ag-spinner {
-          width: 28px; height: 28px;
-          border: 2px solid rgba(0,229,160,0.15);
-          border-top-color: #00e5a0;
+          width: 24px; height: 24px;
+          border: 2.5px solid #e8e8e8;
+          border-top-color: #333;
           border-radius: 50%;
-          animation: agSpin 0.8s linear infinite;
+          animation: agSpin 0.7s linear infinite;
         }
         @keyframes agSpin { to { transform: rotate(360deg); } }
 
-        /* Label */
         .ag-label {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 10px;
-          letter-spacing: 0.18em;
-          color: rgba(0,229,160,0.5);
-          text-transform: uppercase;
-          margin-bottom: 10px;
+          font-size: 10px; font-weight: 600;
+          letter-spacing: 0.1em; text-transform: uppercase;
+          color: #999; margin-bottom: 8px;
+          font-family: ${SYS};
         }
 
-        /* Title */
         .ag-title {
-          font-size: 24px;
-          font-weight: 700;
-          color: #fff;
-          letter-spacing: 0.01em;
-          margin-bottom: 10px;
+          font-size: 22px; font-weight: 700;
+          color: #111; margin-bottom: 8px;
+          font-family: ${SYS};
         }
 
-        /* Description */
-        .ag-desc {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 12px;
-          color: rgba(255,255,255,0.35);
-          line-height: 1.7;
-          letter-spacing: 0.03em;
-          margin-bottom: 28px;
-        }
-
-        /* Divider */
         .ag-divider {
-          width: 40px; height: 1px;
-          background: rgba(0,229,160,0.2);
-          margin: 0 auto 28px;
+          width: 36px; height: 1px;
+          background: #e0e0e0;
+          margin: 0 auto 16px;
         }
 
-        /* Action button */
+        .ag-desc {
+          font-size: 13px; color: #555;
+          line-height: 1.65; margin-bottom: 24px;
+          font-family: ${SYS};
+        }
+
         .ag-btn {
-          font-family: 'Syne', sans-serif;
-          font-size: 12px;
-          font-weight: 700;
-          letter-spacing: 0.1em;
-          text-transform: uppercase;
-          padding: 11px 28px;
-          border-radius: 8px;
-          border: none;
-          cursor: pointer;
-          transition: opacity 0.15s, transform 0.15s;
-          background: linear-gradient(135deg, #00e5a0, #00c98c);
-          color: #060a12;
-          box-shadow: 0 4px 20px rgba(0,229,160,0.2);
+          font-family: ${SYS};
+          font-size: 13px; font-weight: 700;
+          letter-spacing: 0.03em; text-transform: uppercase;
+          padding: 11px 28px; border-radius: 7px;
+          border: none; cursor: pointer;
+          background: #222; color: #fff;
+          transition: background 0.14s;
         }
-        .ag-btn:hover { opacity: 0.88; transform: translateY(-1px); }
-        .ag-btn:active { transform: translateY(0); }
+        .ag-btn:hover  { background: #3a3a3a; }
+        .ag-btn:active { background: #111; }
 
-        /* No-broker specific: show steps */
         .ag-steps {
-          margin-top: 28px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
+          margin-top: 24px;
+          display: flex; flex-direction: column; gap: 8px;
           text-align: left;
         }
         .ag-step {
-          display: flex;
-          align-items: flex-start;
-          gap: 12px;
-          padding: 12px 14px;
-          background: rgba(255,255,255,0.02);
-          border: 1px solid rgba(255,255,255,0.06);
-          border-radius: 8px;
+          display: flex; align-items: flex-start; gap: 10px;
+          padding: 10px 13px;
+          background: #fafafa;
+          border: 1px solid #ebebeb;
+          border-radius: 7px;
         }
         .ag-step-num {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 10px;
-          color: #00e5a0;
-          background: rgba(0,229,160,0.1);
-          border-radius: 4px;
-          padding: 2px 7px;
-          flex-shrink: 0;
-          margin-top: 1px;
+          width: 20px; height: 20px; border-radius: 5px;
+          background: #222; color: #fff;
+          font-size: 10px; font-weight: 700; font-family: ${SYS};
+          display: flex; align-items: center; justify-content: center;
+          flex-shrink: 0; margin-top: 1px;
         }
         .ag-step-text {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 11px;
-          color: rgba(255,255,255,0.4);
-          line-height: 1.5;
-          letter-spacing: 0.03em;
+          font-size: 12px; color: #555;
+          line-height: 1.55; font-family: ${SYS};
         }
       `}</style>
 
       <div className="ag-wrap">
         <div className="ag-box">
+
           {/* Icon / Spinner */}
           <div className="ag-icon-ring">
             {state === "loading"
@@ -226,23 +175,22 @@ export default function AuthGate({ state = "unauthenticated", onConnectBroker })
             </button>
           )}
 
-          {/* Extra: broker steps */}
+          {/* Broker steps */}
           {state === "no-broker" && (
             <div className="ag-steps">
-              <div className="ag-step">
-                <span className="ag-step-num">01</span>
-                <span className="ag-step-text">Click "Connect Broker" and provide your API credentials</span>
-              </div>
-              <div className="ag-step">
-                <span className="ag-step-num">02</span>
-                <span className="ag-step-text">MAT will verify the connection and sync your account</span>
-              </div>
-              <div className="ag-step">
-                <span className="ag-step-num">03</span>
-                <span className="ag-step-text">Momentum engine activates and dashboard goes live</span>
-              </div>
+              {[
+                ["1", `Click "Connect Broker" and provide your API credentials`],
+                ["2", "MAT will verify the connection and sync your account"],
+                ["3", "Momentum engine activates and dashboard goes live"],
+              ].map(([num, text]) => (
+                <div key={num} className="ag-step">
+                  <span className="ag-step-num">{num}</span>
+                  <span className="ag-step-text">{text}</span>
+                </div>
+              ))}
             </div>
           )}
+
         </div>
       </div>
     </>

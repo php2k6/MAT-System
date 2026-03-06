@@ -11,31 +11,19 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 const dashboardService = {
   getPortfolio: async () => {
     // TODO: replace with real API call
-    // const res = await fetch("/api/portfolio", { credentials: "include" });
-    // if (!res.ok) throw new Error("Failed to fetch portfolio");
-    // return res.json();
-    // Expected shape: { user, summary, holdings, strategyDeployed }
-
     await new Promise(r => setTimeout(r, 900));
     return MOCK_PORTFOLIO;
   },
-
   getChartData: async (range) => {
     // TODO: replace with real API call
-    // const res = await fetch(`/api/portfolio/history?range=${range}`, { credentials: "include" });
-    // if (!res.ok) throw new Error("Failed to fetch chart data");
-    // return res.json();
-    // Expected shape: [{ date: string, value: number }]
-
     await new Promise(r => setTimeout(r, 450));
     return generateMockChart(range);
   },
 };
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── MOCK DATA ────────────────────────────────────────────────────────────────
 const MOCK_PORTFOLIO = {
-  strategyDeployed: true, // toggle to false to preview "no strategy" state
+  strategyDeployed: true,
   user: { name: "Your Name" },
   summary: {
     invested:     485000,
@@ -45,12 +33,12 @@ const MOCK_PORTFOLIO = {
     cash:          68500,
   },
   holdings: [
-    { symbol: "RELIANCE",    name: "Reliance Industries", qty: 120, avgPrice: 2410, ltp: 2587, value: 310440, pnl:  21240, pnlPct:  7.34, dayChange:  1.12 },
-    { symbol: "TCS",         name: "Tata Consultancy",    qty:  45, avgPrice: 3780, ltp: 3921, value: 176445, pnl:   6345, pnlPct:  3.73, dayChange:  0.48 },
-    { symbol: "INFY",        name: "Infosys Ltd",         qty:  80, avgPrice: 1620, ltp: 1574, value: 125920, pnl:  -3680, pnlPct: -2.84, dayChange: -0.92 },
-    { symbol: "HDFCBANK",    name: "HDFC Bank",           qty:  60, avgPrice: 1540, ltp: 1612, value:  96720, pnl:   4320, pnlPct:  4.68, dayChange:  0.76 },
-    { symbol: "BAJFINANCE",  name: "Bajaj Finance",       qty:  25, avgPrice: 6890, ltp: 6723, value: 168075, pnl:  -4175, pnlPct: -2.42, dayChange: -1.34 },
-    { symbol: "NIFTY50",     name: "NIFTY 50 ETF",        qty: 200, avgPrice:  220, ltp:  241, value:  48200, pnl:   4200, pnlPct:  9.55, dayChange:  0.23 },
+    { symbol: "RELIANCE",   name: "Reliance Industries", qty: 120, avgPrice: 2410, ltp: 2587, value: 310440, pnl:  21240, pnlPct:  7.34, dayChange:  1.12 },
+    { symbol: "TCS",        name: "Tata Consultancy",    qty:  45, avgPrice: 3780, ltp: 3921, value: 176445, pnl:   6345, pnlPct:  3.73, dayChange:  0.48 },
+    { symbol: "INFY",       name: "Infosys Ltd",         qty:  80, avgPrice: 1620, ltp: 1574, value: 125920, pnl:  -3680, pnlPct: -2.84, dayChange: -0.92 },
+    { symbol: "HDFCBANK",   name: "HDFC Bank",           qty:  60, avgPrice: 1540, ltp: 1612, value:  96720, pnl:   4320, pnlPct:  4.68, dayChange:  0.76 },
+    { symbol: "BAJFINANCE", name: "Bajaj Finance",       qty:  25, avgPrice: 6890, ltp: 6723, value: 168075, pnl:  -4175, pnlPct: -2.42, dayChange: -1.34 },
+    { symbol: "NIFTY50",    name: "NIFTY 50 ETF",        qty: 200, avgPrice:  220, ltp:  241, value:  48200, pnl:   4200, pnlPct:  9.55, dayChange:  0.23 },
   ],
 };
 
@@ -70,7 +58,6 @@ function generateMockChart(range) {
   }
   return data;
 }
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const fmt = (n) => "₹" + Number(n).toLocaleString("en-IN");
@@ -82,7 +69,9 @@ const fmtCompact = (n) => {
   if (abs >= 1000)     return sign + "₹" + (abs / 1000).toFixed(1) + "K";
   return sign + "₹" + abs;
 };
-// ─────────────────────────────────────────────────────────────────────────────
+
+const SYS  = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif`;
+const MONO = `'Courier New', Courier, monospace`;
 
 // ─── SUB-COMPONENTS ───────────────────────────────────────────────────────────
 
@@ -90,10 +79,10 @@ function Spinner({ size = 32 }) {
   return (
     <div style={{
       width: size, height: size,
-      border: "2px solid rgba(0,229,160,0.12)",
-      borderTopColor: "#00e5a0",
+      border: "2.5px solid #e8e8e8",
+      borderTopColor: "#333",
       borderRadius: "50%",
-      animation: "dbSpin 0.75s linear infinite",
+      animation: "dbSpin 0.7s linear infinite",
     }} />
   );
 }
@@ -103,101 +92,98 @@ function NoStrategy({ onDeploy }) {
     <div style={{
       display: "flex", flexDirection: "column",
       alignItems: "center", justifyContent: "center",
-      minHeight: "48vh", textAlign: "center",
+      minHeight: "46vh", textAlign: "center",
+      padding: "40px 20px",
     }}>
       <div style={{
-        width: 70, height: 70, borderRadius: "50%",
-        border: "1px solid rgba(0,229,160,0.2)",
-        background: "rgba(0,229,160,0.04)",
+        width: 64, height: 64, borderRadius: "50%",
+        border: "1.5px solid #e0e0e0",
+        background: "#f5f5f5",
         display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 28, color: "rgba(0,229,160,0.45)",
-        marginBottom: 24, position: "relative",
-        boxShadow: "0 0 40px rgba(0,229,160,0.06)",
-      }}>
-        ◈
-        <div style={{
-          position: "absolute", inset: -7, borderRadius: "50%",
-          border: "1px solid rgba(0,229,160,0.07)",
-        }} />
-      </div>
+        fontSize: 24, color: "#999",
+        marginBottom: 20,
+      }}>◈</div>
 
-      <div style={{
-        fontFamily: "'JetBrains Mono',monospace",
-        fontSize: 10, letterSpacing: "0.2em",
-        color: "rgba(0,229,160,0.5)",
-        textTransform: "uppercase", marginBottom: 10,
-      }}>
-        // NO STRATEGY ACTIVE
+      <div style={{ fontSize: 11, fontWeight: 600, color: "#999", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8, fontFamily: SYS }}>
+        No Strategy Active
       </div>
-
-      <div style={{
-        fontFamily: "'Syne',sans-serif",
-        fontSize: 26, fontWeight: 700,
-        color: "#fff", marginBottom: 10,
-      }}>
+      <div style={{ fontSize: 22, fontWeight: 700, color: "#111", marginBottom: 8, fontFamily: SYS }}>
         No Strategy Deployed
       </div>
-
-      <div style={{
-        width: 40, height: 1,
-        background: "rgba(0,229,160,0.2)",
-        margin: "0 auto 20px",
-      }} />
-
-      <div style={{
-        fontFamily: "'JetBrains Mono',monospace",
-        fontSize: 12, color: "rgba(255,255,255,0.32)",
-        lineHeight: 1.8, maxWidth: 360, marginBottom: 32,
-        letterSpacing: "0.03em",
-      }}>
+      <div style={{ width: 36, height: 1, background: "#e0e0e0", margin: "0 auto 16px" }} />
+      <div style={{ fontSize: 13, color: "#666", lineHeight: 1.7, maxWidth: 360, marginBottom: 28, fontFamily: SYS }}>
         Deploy a momentum strategy to activate live tracking, portfolio analytics, and holdings data.
       </div>
 
-      <div style={{
-        display: "flex", flexDirection: "column", gap: 10,
-        width: "100%", maxWidth: 360, marginBottom: 32, textAlign: "left",
-      }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 360, marginBottom: 28, textAlign: "left" }}>
         {[
-          ["01", "Choose a momentum strategy from the library"],
-          ["02", "Configure risk parameters and capital allocation"],
-          ["03", "Deploy — dashboard activates automatically"],
+          ["1", "Choose a momentum strategy from the library"],
+          ["2", "Configure risk parameters and capital allocation"],
+          ["3", "Deploy — dashboard activates automatically"],
         ].map(([num, text]) => (
           <div key={num} style={{
-            display: "flex", alignItems: "flex-start", gap: 12,
-            padding: "11px 14px",
-            background: "rgba(255,255,255,0.02)",
-            border: "1px solid rgba(255,255,255,0.06)",
-            borderRadius: 8,
+            display: "flex", alignItems: "flex-start", gap: 10,
+            padding: "10px 14px",
+            background: "#fff", border: "1px solid #e8e8e8", borderRadius: 7,
           }}>
             <span style={{
-              fontFamily: "'JetBrains Mono',monospace",
-              fontSize: 10, color: "#00e5a0",
-              background: "rgba(0,229,160,0.1)",
-              borderRadius: 4, padding: "2px 7px",
+              width: 20, height: 20, borderRadius: 5,
+              background: "#222", color: "#fff",
+              fontSize: 10, fontWeight: 700, fontFamily: SYS,
+              display: "flex", alignItems: "center", justifyContent: "center",
               flexShrink: 0, marginTop: 1,
             }}>{num}</span>
-            <span style={{
-              fontFamily: "'JetBrains Mono',monospace",
-              fontSize: 11, color: "rgba(255,255,255,0.38)",
-              lineHeight: 1.6, letterSpacing: "0.03em",
-            }}>{text}</span>
+            <span style={{ fontSize: 12, color: "#555", lineHeight: 1.55, fontFamily: SYS }}>{text}</span>
           </div>
         ))}
       </div>
 
-      <button className="db-btn-primary" onClick={onDeploy}>
+      <button
+        onClick={onDeploy}
+        style={{
+          padding: "11px 28px", borderRadius: 7, border: "none",
+          background: "#222", color: "#fff",
+          fontSize: 13, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase",
+          cursor: "pointer", fontFamily: SYS,
+          transition: "background 0.14s",
+        }}
+        onMouseEnter={e => e.target.style.background = "#3a3a3a"}
+        onMouseLeave={e => e.target.style.background = "#222"}
+      >
         Deploy Strategy
       </button>
     </div>
   );
 }
 
-function StatCard({ label, value, sub, subType, delay }) {
+function StatCard({ label, value, sub, pnlType, delay }) {
+  const isPos = pnlType === "pos";
+  const isNeg = pnlType === "neg";
   return (
-    <div className="db-stat" style={{ animationDelay: delay }}>
-      <div className="db-stat-label">{label}</div>
-      <div className={`db-stat-value ${subType || ""}`}>{value}</div>
-      {sub && <span className={`db-stat-sub ${subType || ""}`}>{sub}</span>}
+    <div style={{
+      background: "#fff", border: "1px solid #e0e0e0", borderRadius: 8,
+      padding: "18px 20px",
+      opacity: 0, transform: "translateY(8px)",
+      animation: `statIn 0.35s ease ${delay} forwards`,
+    }}>
+      <div style={{ fontSize: 10, fontWeight: 600, color: "#999", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10, fontFamily: SYS }}>{label}</div>
+      <div style={{
+        fontSize: 22, fontWeight: 700, letterSpacing: "-0.01em", marginBottom: 6, fontFamily: MONO,
+        color: isPos ? "#1b6f3e" : isNeg ? "#c62828" : "#111",
+      }}>{value}</div>
+      {sub && (
+        pnlType ? (
+          <span style={{
+            display: "inline-block",
+            fontSize: 11, fontWeight: 600, fontFamily: MONO,
+            padding: "2px 8px", borderRadius: 4,
+            background: isPos ? "#ebf7ef" : "#fdecea",
+            color: isPos ? "#1b6f3e" : "#c62828",
+          }}>{sub}</span>
+        ) : (
+          <span style={{ fontSize: 11, color: "#999", fontFamily: MONO }}>{sub}</span>
+        )
+      )}
     </div>
   );
 }
@@ -206,18 +192,18 @@ function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return (
     <div style={{
-      background: "#0d1526",
-      border: "1px solid rgba(0,229,160,0.2)",
-      borderRadius: 8, padding: "10px 14px",
-      fontFamily: "'JetBrains Mono',monospace", fontSize: 12,
+      background: "#fff", border: "1px solid #e0e0e0",
+      borderRadius: 7, padding: "9px 13px",
+      boxShadow: "0 4px 12px rgba(0,0,0,0.09)",
+      fontFamily: SYS,
     }}>
-      <div style={{ color: "rgba(255,255,255,0.35)", marginBottom: 4, fontSize: 10 }}>{label}</div>
-      <div style={{ color: "#00e5a0", fontWeight: 500 }}>{fmt(payload[0].value)}</div>
+      <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#111", fontFamily: MONO }}>{fmt(payload[0].value)}</div>
     </div>
   );
 }
-// ─────────────────────────────────────────────────────────────────────────────
 
+// ─── MAIN DASHBOARD ──────────────────────────────────────────────────────────
 export default function Dashboard() {
   const navigate = useNavigate();
 
@@ -236,10 +222,7 @@ export default function Dashboard() {
         setLoading(false);
         setTimeout(() => setMounted(true), 40);
       })
-      .catch(err => {
-        console.error("Portfolio fetch failed:", err);
-        setLoading(false);
-      });
+      .catch(err => { console.error("Portfolio fetch failed:", err); setLoading(false); });
   }, []);
 
   useEffect(() => {
@@ -247,17 +230,17 @@ export default function Dashboard() {
     setChartLoading(true);
     dashboardService.getChartData(range)
       .then(data => { setChartData(data); setChartLoading(false); })
-      .catch(()  => setChartLoading(false));
+      .catch(() => setChartLoading(false));
   }, [view, range]);
 
-  const handleViewToggle = (v) => setView(prev => prev === v ? null : v);
+  const handleViewToggle = v => setView(prev => prev === v ? null : v);
 
   if (loading) return (
     <div style={{
-      minHeight: "calc(100vh - 60px)", background: "#060a12",
+      minHeight: "calc(100vh - 56px)", background: "#f2f2f2",
       display: "flex", alignItems: "center", justifyContent: "center",
     }}>
-      <Spinner size={36} />
+      <Spinner size={34} />
     </div>
   );
 
@@ -267,303 +250,169 @@ export default function Dashboard() {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         .db-root {
-          min-height: calc(100vh - 60px);
-          background: #060a12;
-          padding: 36px 40px 80px;
-          font-family: 'Syne', sans-serif;
-          position: relative;
+          min-height: calc(100vh - 56px);
+          background: #f2f2f2;
+          padding: 28px 28px 72px;
+          font-family: ${SYS};
         }
-        .db-root::before {
-          content: '';
-          position: fixed; inset: 0; pointer-events: none;
-          background-image:
-            linear-gradient(rgba(0,229,160,0.025) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(0,229,160,0.025) 1px, transparent 1px);
-          background-size: 40px 40px;
-        }
-
         .db-wrap {
           max-width: 1100px; margin: 0 auto;
-          opacity: 0; transform: translateY(16px);
-          transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.16,1,0.3,1);
+          opacity: 0; transform: translateY(10px);
+          transition: opacity 0.35s ease, transform 0.35s ease;
         }
         .db-wrap.mounted { opacity: 1; transform: translateY(0); }
 
-        .db-greeting-sub {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 10px; letter-spacing: 0.2em;
-          color: rgba(0,229,160,0.55); text-transform: uppercase;
-          margin-bottom: 6px;
-        }
-        .db-greeting-name {
-          font-size: 30px; font-weight: 800;
-          color: #fff; letter-spacing: 0.01em; margin-bottom: 32px;
-        }
-        .db-greeting-name span { color: #00e5a0; }
-
+        /* Summary grid */
         .db-summary {
           display: grid;
           grid-template-columns: repeat(4, 1fr);
-          gap: 14px; margin-bottom: 28px;
+          gap: 12px; margin-bottom: 24px;
         }
-        @media (max-width: 860px) {
-          .db-summary { grid-template-columns: repeat(2, 1fr); }
-          .db-root { padding: 24px 20px 60px; }
-        }
+        @media (max-width: 860px) { .db-summary { grid-template-columns: repeat(2, 1fr); } .db-root { padding: 18px 14px 60px; } }
         @media (max-width: 480px) { .db-summary { grid-template-columns: 1fr; } }
 
-        .db-stat {
-          background: rgba(10,16,30,0.85);
-          border: 1px solid rgba(255,255,255,0.07);
-          border-radius: 12px; padding: 20px 22px;
-          position: relative; overflow: hidden;
-          transition: border-color 0.2s, transform 0.2s;
-          opacity: 0; transform: translateY(10px);
-          animation: statIn 0.4s ease forwards;
-        }
-        .db-stat:hover { border-color: rgba(0,229,160,0.18); transform: translateY(-1px); }
-        .db-stat::before {
-          content: '';
-          position: absolute; top: 0; left: 0; right: 0; height: 1px;
-          background: linear-gradient(90deg, transparent, rgba(0,229,160,0.25), transparent);
-        }
-        @keyframes statIn { to { opacity: 1; transform: translateY(0); } }
+        @keyframes statIn  { to { opacity: 1; transform: translateY(0); } }
+        @keyframes panelIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes dbSpin  { to { transform: rotate(360deg); } }
 
-        .db-stat-label {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
-          color: rgba(255,255,255,0.28); margin-bottom: 10px;
-        }
-        .db-stat-value {
-          font-size: 22px; font-weight: 700;
-          color: #fff; letter-spacing: -0.01em; margin-bottom: 5px;
-        }
-        .db-stat-value.pos { color: #00e5a0; }
-        .db-stat-value.neg { color: #ff4d6d; }
-        .db-stat-sub {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 10px; color: rgba(255,255,255,0.22);
-        }
-        .db-stat-sub.pos { background: rgba(0,229,160,0.1); color: #00e5a0; padding: 2px 8px; border-radius: 4px; }
-        .db-stat-sub.neg { background: rgba(255,77,109,0.1); color: #ff4d6d; padding: 2px 8px; border-radius: 4px; }
-
-        .db-toggles { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; }
+        /* Toggle buttons */
+        .db-toggles { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
         .db-toggle {
-          font-family: 'Syne', sans-serif;
-          font-size: 12px; font-weight: 700;
-          letter-spacing: 0.08em; text-transform: uppercase;
-          padding: 9px 22px; border-radius: 8px; border: none; cursor: pointer;
-          display: flex; align-items: center; gap: 8px;
-          transition: all 0.18s;
+          font-size: 12px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+          padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer;
+          display: flex; align-items: center; gap: 7px; transition: all 0.14s;
+          font-family: ${SYS};
         }
-        .db-toggle-off {
-          background: rgba(255,255,255,0.04);
-          color: rgba(255,255,255,0.4);
-          border: 1px solid rgba(255,255,255,0.08);
-        }
-        .db-toggle-off:hover { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.65); }
-        .db-toggle-on {
-          background: linear-gradient(135deg, #00e5a0, #00c98c);
-          color: #060a12;
-          box-shadow: 0 4px 16px rgba(0,229,160,0.22);
-        }
+        .db-toggle-off { background: #fff; color: #555; border: 1px solid #ccc; }
+        .db-toggle-off:hover { background: #f5f5f5; border-color: #999; }
+        .db-toggle-on  { background: #222; color: #fff; }
 
+        /* Panel */
         .db-panel {
-          background: rgba(10,16,30,0.88);
-          border: 1px solid rgba(255,255,255,0.07);
-          border-radius: 14px; overflow: hidden;
-          animation: panelIn 0.35s cubic-bezier(0.16,1,0.3,1) both;
+          background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;
+          animation: panelIn 0.3s ease both;
         }
-        @keyframes panelIn {
-          from { opacity: 0; transform: translateY(10px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-
         .db-panel-header {
-          padding: 16px 24px;
-          border-bottom: 1px solid rgba(255,255,255,0.06);
+          padding: 13px 20px; border-bottom: 1px solid #ebebeb; background: #f8f8f8;
           display: flex; align-items: center; justify-content: space-between;
         }
-        .db-panel-title {
-          font-size: 12px; font-weight: 700;
-          letter-spacing: 0.1em; text-transform: uppercase;
-          color: rgba(255,255,255,0.55);
-        }
+        .db-panel-title { font-size: 12px; font-weight: 700; color: #333; text-transform: uppercase; letter-spacing: 0.05em; }
 
-        .db-ranges { display: flex; gap: 4px; }
+        /* Range buttons */
+        .db-ranges { display: flex; gap: 3px; }
         .db-range {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 11px; padding: 4px 10px;
-          border-radius: 6px; border: none; cursor: pointer;
-          transition: all 0.15s;
+          font-family: ${MONO}; font-size: 11px;
+          padding: 4px 10px; border-radius: 5px; border: none; cursor: pointer; transition: all 0.13s;
         }
-        .db-range-on  { background: rgba(0,229,160,0.14); color: #00e5a0; }
-        .db-range-off { background: transparent; color: rgba(255,255,255,0.28); }
-        .db-range-off:hover { color: rgba(255,255,255,0.6); }
+        .db-range-on  { background: #222; color: #fff; }
+        .db-range-off { background: transparent; color: #888; }
+        .db-range-off:hover { background: #f0f0f0; color: #333; }
 
-        .db-chart-body { padding: 24px 12px 16px; }
-        .db-chart-loading {
-          height: 260px; display: flex;
-          align-items: center; justify-content: center;
-        }
-
+        /* Table */
         .db-table { width: 100%; border-collapse: collapse; }
         .db-table thead th {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
-          color: rgba(255,255,255,0.22);
-          padding: 13px 20px; font-weight: 400; text-align: right;
-          border-bottom: 1px solid rgba(255,255,255,0.05);
+          font-family: ${MONO}; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+          color: #888; padding: 11px 18px; font-weight: 600; text-align: right;
+          border-bottom: 1px solid #ebebeb; background: #f8f8f8;
         }
         .db-table thead th:first-child { text-align: left; }
-        .db-table tbody tr {
-          border-bottom: 1px solid rgba(255,255,255,0.04);
-          transition: background 0.15s;
-        }
+        .db-table tbody tr { border-bottom: 1px solid #f0f0f0; transition: background 0.13s; }
         .db-table tbody tr:last-child { border-bottom: none; }
-        .db-table tbody tr:hover { background: rgba(255,255,255,0.025); }
+        .db-table tbody tr:hover { background: #fafafa; }
         .db-table td {
-          padding: 13px 20px;
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 13px; color: rgba(255,255,255,0.7);
-          text-align: right; vertical-align: middle;
+          padding: 11px 18px; font-family: ${MONO}; font-size: 13px;
+          color: #333; text-align: right; vertical-align: middle;
         }
         .db-table td:first-child { text-align: left; }
-
-        .db-sym      { font-weight: 500; color: #fff; font-size: 13px; letter-spacing: 0.04em; }
-        .db-sym-name { font-size: 10px; color: rgba(255,255,255,0.28); margin-top: 3px; }
+        .db-sym      { font-weight: 700; color: #111; font-size: 13px; }
+        .db-sym-name { font-size: 10px; color: #999; margin-top: 2px; }
         .db-pnl-pct  { font-size: 10px; margin-top: 2px; }
-        .pos-text    { color: #00e5a0; }
-        .neg-text    { color: #ff4d6d; }
-
-        .db-btn-primary {
-          font-family: 'Syne', sans-serif;
-          font-size: 12px; font-weight: 700;
-          letter-spacing: 0.1em; text-transform: uppercase;
-          padding: 11px 28px; border-radius: 8px;
-          border: none; cursor: pointer;
-          background: linear-gradient(135deg, #00e5a0, #00c98c);
-          color: #060a12;
-          box-shadow: 0 4px 20px rgba(0,229,160,0.22);
-          transition: opacity 0.15s, transform 0.15s;
-        }
-        .db-btn-primary:hover  { opacity: 0.86; transform: translateY(-1px); }
-        .db-btn-primary:active { transform: translateY(0); }
-
-        @keyframes dbSpin { to { transform: rotate(360deg); } }
+        .pos-text { color: #1b6f3e; }
+        .neg-text { color: #c62828; }
       `}</style>
 
       <div className="db-root">
         <div className={`db-wrap ${mounted ? "mounted" : ""}`}>
 
-          {/* ── Greeting ─────────────────────────────────────── */}
-          <div className="db-greeting-sub">// Welcome back</div>
-          <div className="db-greeting-name">
-            {user.name.split(" ")[0]}{" "}
-            <span>{user.name.split(" ").slice(1).join(" ")}</span>
+          {/* ── Greeting ──────────────────────────────────────── */}
+          <div style={{ marginBottom: 22 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#999", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>
+              Welcome back
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: "#111" }}>
+              {user.name}
+            </div>
           </div>
 
-          {/* ── Strategy Gate ────────────────────────────────── */}
+          {/* ── Strategy Gate ─────────────────────────────────── */}
           {!strategyDeployed ? (
             <NoStrategy onDeploy={() => navigate("/deploy")} />
           ) : (
             <>
-              {/* ── Summary Cards ──────────────────────────────── */}
+              {/* ── Summary Cards ─────────────────────────────── */}
               <div className="db-summary">
-                <StatCard
-                  label="Invested"
-                  value={fmtCompact(summary.invested)}
-                  sub={fmt(summary.invested)}
-                  delay="0.05s"
-                />
-                <StatCard
-                  label="Current Value"
-                  value={fmtCompact(summary.currentValue)}
-                  sub={fmt(summary.currentValue)}
-                  delay="0.1s"
-                />
-                <StatCard
-                  label="P&L"
-                  value={(pnlPos ? "+" : "") + fmtCompact(summary.pnl)}
-                  sub={(pnlPos ? "▲ " : "▼ ") + Math.abs(summary.pnlPct).toFixed(2) + "%"}
-                  subType={pnlPos ? "pos" : "neg"}
-                  delay="0.15s"
-                />
-                <StatCard
-                  label="Cash Available"
-                  value={fmtCompact(summary.cash)}
-                  sub={fmt(summary.cash)}
-                  delay="0.2s"
-                />
+                <StatCard label="Invested"      value={fmtCompact(summary.invested)}     sub={fmt(summary.invested)}                                     delay="0.04s" />
+                <StatCard label="Current Value" value={fmtCompact(summary.currentValue)} sub={fmt(summary.currentValue)}                                 delay="0.09s" />
+                <StatCard label="P&L"           value={(pnlPos ? "+" : "") + fmtCompact(summary.pnl)} sub={(pnlPos ? "▲ " : "▼ ") + Math.abs(summary.pnlPct).toFixed(2) + "%"} pnlType={pnlPos ? "pos" : "neg"} delay="0.14s" />
+                <StatCard label="Cash Available" value={fmtCompact(summary.cash)}        sub={fmt(summary.cash)}                                         delay="0.19s" />
               </div>
 
-              {/* ── Toggle Buttons ─────────────────────────────── */}
+              {/* ── Toggle Buttons ────────────────────────────── */}
               <div className="db-toggles">
-                <button
-                  className={`db-toggle ${view === "chart" ? "db-toggle-on" : "db-toggle-off"}`}
-                  onClick={() => handleViewToggle("chart")}
-                >
+                <button className={`db-toggle ${view === "chart" ? "db-toggle-on" : "db-toggle-off"}`} onClick={() => handleViewToggle("chart")}>
                   <span>▲</span> Portfolio Chart
                 </button>
-                <button
-                  className={`db-toggle ${view === "holdings" ? "db-toggle-on" : "db-toggle-off"}`}
-                  onClick={() => handleViewToggle("holdings")}
-                >
+                <button className={`db-toggle ${view === "holdings" ? "db-toggle-on" : "db-toggle-off"}`} onClick={() => handleViewToggle("holdings")}>
                   <span>≡</span> Holdings
                 </button>
               </div>
 
-              {/* ── Chart Panel ────────────────────────────────── */}
+              {/* ── Chart Panel ───────────────────────────────── */}
               {view === "chart" && (
                 <div className="db-panel">
                   <div className="db-panel-header">
                     <span className="db-panel-title">Portfolio Value</span>
                     <div className="db-ranges">
                       {["1W","1M","3M","1Y"].map(r => (
-                        <button
-                          key={r}
-                          className={`db-range ${range === r ? "db-range-on" : "db-range-off"}`}
-                          onClick={() => setRange(r)}
-                        >
-                          {r}
-                        </button>
+                        <button key={r} className={`db-range ${range === r ? "db-range-on" : "db-range-off"}`} onClick={() => setRange(r)}>{r}</button>
                       ))}
                     </div>
                   </div>
-                  <div className="db-chart-body">
+                  <div style={{ padding: "20px 10px 14px" }}>
                     {chartLoading ? (
-                      <div className="db-chart-loading"><Spinner size={30} /></div>
+                      <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <Spinner size={28} />
+                      </div>
                     ) : (
-                      <ResponsiveContainer width="100%" height={280}>
+                      <ResponsiveContainer width="100%" height={270}>
                         <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 0 }}>
                           <defs>
                             <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%"   stopColor="#00e5a0" stopOpacity={0.18} />
-                              <stop offset="100%" stopColor="#00e5a0" stopOpacity={0}    />
+                              <stop offset="0%"   stopColor="#3b5bdb" stopOpacity={0.15} />
+                              <stop offset="100%" stopColor="#3b5bdb" stopOpacity={0}    />
                             </linearGradient>
                           </defs>
-                          <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
+                          <CartesianGrid stroke="#f0f0f0" vertical={false} />
                           <XAxis
                             dataKey="date"
-                            tick={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, fill: "rgba(255,255,255,0.22)" }}
+                            tick={{ fontFamily: MONO, fontSize: 10, fill: "#aaa" }}
                             tickLine={false} axisLine={false} interval="preserveStartEnd"
                           />
                           <YAxis
-                            tick={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, fill: "rgba(255,255,255,0.22)" }}
+                            tick={{ fontFamily: MONO, fontSize: 10, fill: "#aaa" }}
                             tickLine={false} axisLine={false}
                             tickFormatter={v => "₹" + (v / 100000).toFixed(1) + "L"}
-                            width={62}
+                            width={58}
                           />
                           <Tooltip content={<ChartTooltip />} />
                           <Area
                             type="monotone" dataKey="value"
-                            stroke="#00e5a0" strokeWidth={2}
+                            stroke="#3b5bdb" strokeWidth={2}
                             fill="url(#chartGrad)" dot={false}
-                            activeDot={{ r: 4, fill: "#00e5a0", stroke: "#060a12", strokeWidth: 2 }}
+                            activeDot={{ r: 4, fill: "#3b5bdb", stroke: "#fff", strokeWidth: 2 }}
                           />
                         </AreaChart>
                       </ResponsiveContainer>
@@ -572,17 +421,12 @@ export default function Dashboard() {
                 </div>
               )}
 
-              {/* ── Holdings Panel ─────────────────────────────── */}
+              {/* ── Holdings Panel ────────────────────────────── */}
               {view === "holdings" && (
                 <div className="db-panel">
                   <div className="db-panel-header">
                     <span className="db-panel-title">Current Holdings</span>
-                    <span style={{
-                      fontFamily: "'JetBrains Mono',monospace",
-                      fontSize: 10, color: "rgba(255,255,255,0.22)",
-                    }}>
-                      {holdings.length} positions
-                    </span>
+                    <span style={{ fontSize: 11, color: "#999", fontFamily: MONO }}>{holdings.length} positions</span>
                   </div>
                   <div style={{ overflowX: "auto" }}>
                     <table className="db-table">
@@ -609,17 +453,17 @@ export default function Dashboard() {
                               </td>
                               <td>{h.qty}</td>
                               <td>{fmt(h.avgPrice)}</td>
-                              <td style={{ color: "#fff" }}>{fmt(h.ltp)}</td>
+                              <td style={{ color: "#111", fontWeight: 600 }}>{fmt(h.ltp)}</td>
                               <td>{fmtCompact(h.value)}</td>
                               <td>
-                                <span className={pos ? "pos-text" : "neg-text"}>
+                                <span className={pos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
                                   {pos ? "+" : ""}{fmtCompact(h.pnl)}
                                 </span>
                                 <div className={`db-pnl-pct ${pos ? "pos-text" : "neg-text"}`}>
                                   {pos ? "▲" : "▼"} {Math.abs(h.pnlPct).toFixed(2)}%
                                 </div>
                               </td>
-                              <td className={dayPos ? "pos-text" : "neg-text"}>
+                              <td className={dayPos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
                                 {dayPos ? "+" : ""}{h.dayChange.toFixed(2)}%
                               </td>
                             </tr>
