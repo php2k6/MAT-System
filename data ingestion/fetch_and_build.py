@@ -120,6 +120,7 @@ def fetch_ohlcv(symbol: str) -> pd.DataFrame | None:
             period=f"{YEARS}y",
             progress=False,
             auto_adjust=True,    # back-adjusts ALL history for splits/bonuses
+            rounding=True
         )
         if df.empty:
             return None
