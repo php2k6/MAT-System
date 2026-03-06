@@ -19,7 +19,7 @@ WHAT THIS DOES:
   6. Saves the updated master CSV in-place
 
 HOLIDAY / WEEKEND HANDLING:
-  - A reference ticker (NIFTYBEES.NS) is checked first to get the
+  - A reference ticker (NIFTYBEES.NS) is checked first to get thedp-side
     actual last available trading date from Yahoo Finance
   - If Yahoo has no new data (holiday, weekend, data delay) the
     script exits cleanly with "already up to date"
@@ -69,6 +69,7 @@ def get_last_available_trading_date() -> pd.Timestamp | None:
             period="5d",
             progress=False,
             auto_adjust=True,
+            rounding=True
         )
         if ref.empty:
             print(f"  ⚠  Reference ticker {REFERENCE_TICKER} returned no data.")
