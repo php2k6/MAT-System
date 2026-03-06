@@ -6,25 +6,28 @@ import matplotlib.ticker as mticker
 # ── CONFIG ──────────────────────────────────────────────────────
 CSV_PATH         = "nifty250_log_return_volatility.csv"
 UNIVERSE         = "nifty250"
-INITIAL_CAPITAL  = 100_000
-START_YEAR       = 2016
+INITIAL_CAPITAL  = 10_000_000
+START_DATE       = "2020-01-20"   # ← replaces START_YEAR; format: "YYYY-MM-DD"
 
 # ── REBALANCE FREQUENCY ─────────────────────────────────────────
 # Set REBALANCE_FREQ to either:
-#   "monthly"  → rebalance every N months  (uses REBALANCE_MONTHS)
-#   "weekly"   → rebalance every N weeks   (uses REBALANCE_WEEKS)
+#   "monthly"  → rebalance every N calendar months from START_DATE
+#   "weekly"   → rebalance every N*7 calendar days  from START_DATE
+#
+# If the exact target date is not a trading day, the NEXT available
+# trading day is used.
 REBALANCE_FREQ   = "monthly"   # "monthly" | "weekly"
 REBALANCE_MONTHS = 1           # used when REBALANCE_FREQ == "monthly"
-REBALANCE_WEEKS  = 2           # used when REBALANCE_FREQ == "weekly"
+REBALANCE_WEEKS  = 1           # used when REBALANCE_FREQ == "weekly"
 
-LOOKBACK_1       = 3
+LOOKBACK_1       = 6
 LOOKBACK_2       = 12
 SKIP_MONTHS      = 0
 WEIGHT_1         = 0.5
 WEIGHT_2         = 0.5
 N_STOCKS         = 10
 MIN_PRICE        = 1.0
-MAX_PRICE        = 100_000
+MAX_PRICE        = 1_000_000
 CASH_BUFFER      = 0.005
 
 BROKERAGE        = 0.0003
@@ -34,6 +37,7 @@ SEBI_CHARGE      = 0.000001
 GST_RATE         = 0.18
 STAMP_DUTY_BUY   = 0.00015
 TRADING_DAYS_PER_MONTH = 21
+
 
 UNIVERSE_MAP = {
     "nifty50":  ["nifty50"],
@@ -61,30 +65,23 @@ def _max_buyable_shares(cash: float, price: float) -> int:
 
 
 def get_rebalance_dates(all_dates):
-    """
-    Returns the set of rebalance dates based on REBALANCE_FREQ:
-      - "monthly": last trading day of every N-th calendar month
-      - "weekly" : last trading day of every N-th ISO week
-    Logic is identical for both — only the bucket key differs.
-    """
-    temp = pd.DataFrame({"date": pd.to_datetime(sorted(all_dates))})
+    trading_days = pd.DatetimeIndex(sorted(all_dates))
+    start = pd.Timestamp(START_DATE)
+    end = trading_days[-1]
 
     if REBALANCE_FREQ == "weekly":
-        # ISO week number; group every REBALANCE_WEEKS weeks
-        # Bucket = (year * 53 + week - 1) // REBALANCE_WEEKS  (53 gives safe upper bound)
-        iso = temp["date"].dt.isocalendar()
-        temp["bucket"] = (
-            (iso["year"].astype(int) * 53 + iso["week"].astype(int) - 1)
-            // REBALANCE_WEEKS
-        )
-    else:  # "monthly" (default)
-        temp["bucket"] = (
-            (temp["date"].dt.year * 12 + temp["date"].dt.month - 1)
-            // REBALANCE_MONTHS
-        )
+        schedule = pd.date_range(start=start, end=end, freq=f"{REBALANCE_WEEKS*7}D")
+    else:
+        schedule = pd.date_range(start=start, end=end, freq=pd.DateOffset(months=REBALANCE_MONTHS))
 
-    return set(temp.groupby("bucket")["date"].max())
+    rebalance_dates = set()
 
+    for d in schedule:
+        idx = trading_days.searchsorted(d)
+        if idx < len(trading_days):
+            rebalance_dates.add(trading_days[idx])
+
+    return rebalance_dates
 
 def compute_momentum_scores(df):
     df        = df.copy()
@@ -423,10 +420,12 @@ if __name__ == "__main__":
         raw_df  = raw_df[raw_df["index_member"].str.lower().isin(allowed)].copy()
 
     scored_df = compute_momentum_scores(raw_df)
-    scored_df = scored_df[scored_df["date"].dt.year >= START_YEAR].copy()
+
+    # Filter from START_DATE onward
+    scored_df = scored_df[scored_df["date"] >= pd.Timestamp(START_DATE)].copy()
 
     print(f"Running backtest on {UNIVERSE.upper()} "
-          f"[{REBALANCE_FREQ} rebalance]...")
+          f"[{REBALANCE_FREQ} rebalance, anchored to {START_DATE}]...")
     result, rebal_df, trades_df = run_backtest(scored_df)
 
     print_performance_report(result, rebal_df, trades_df)
