@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 10080  # 7 days
 
+    # Fyers
+    fyers_app_id: str = ""
+    fyers_secret_key: str = ""
+    fyers_redirect_uri: str = ""
+
     class Config:
         env_file = "backend/.env"
 

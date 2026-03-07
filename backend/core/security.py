@@ -1,6 +1,9 @@
+import base64
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from cryptography.fernet import Fernet
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
@@ -36,3 +39,19 @@ def decode_access_token(token: str) -> Optional[str]:
         return payload.get("sub")
     except JWTError:
         return None
+
+
+def _fernet() -> Fernet:
+    """Derives a Fernet key from the JWT secret so no extra config is needed."""
+    raw = hashlib.sha256(settings.jwt_secret_key.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(raw))
+
+
+def encrypt_token(plain: str) -> str:
+    """Encrypt a broker token for storage in the database."""
+    return _fernet().encrypt(plain.encode()).decode()
+
+
+def decrypt_token(encrypted: str) -> str:
+    """Decrypt a previously encrypted broker token."""
+    return _fernet().decrypt(encrypted.encode()).decode()
