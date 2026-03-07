@@ -43,6 +43,7 @@ export default function Login() {
       setLoading(true);
       const response = await axios.post(`${API_BASE_URL}/auth/login`, formData, { withCredentials: true });
       console.log("Login Success:", response.data);
+      await refresh();
       navigate("/dashboard");
     } catch (error) {
       setServerError(error.response?.data?.message || "Login failed. Please try again.");
