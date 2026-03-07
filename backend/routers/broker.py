@@ -92,8 +92,10 @@ def broker_status(
             response = refresh_session.generate_token()
 
             if response.get("s") == "ok":
-                new_access  = response["data"]["access_token"]
-                new_refresh = response["data"].get("refresh_token", refresh_token)
+                new_access  = response.get("access_token", "")
+                new_refresh = response.get("refresh_token", refresh_token)
+                if not new_access:
+                    raise ValueError("empty access token")
 
                 session.access_token_encrypted  = encrypt_token(new_access)
                 session.refresh_token_encrypted = encrypt_token(new_refresh)
@@ -153,8 +155,10 @@ def broker_callback(
     if response.get("s") != "ok":
         return RedirectResponse(f"{_err_redirect}?status=error&reason=token_exchange_failed")
 
-    access_token  = response["data"]["access_token"]
-    refresh_token = response["data"].get("refresh_token", "")
+    access_token  = response.get("access_token", "")
+    refresh_token = response.get("refresh_token", "")
+    if not access_token:
+        return RedirectResponse(f"{_err_redirect}?status=error&reason=token_missing")
     today         = date.today()
 
     try:
