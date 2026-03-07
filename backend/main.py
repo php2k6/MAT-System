@@ -1,11 +1,21 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from backend.routers import strategies, backtest, portfolio
 from backend.routers import auth
 from backend.database import init_db
+from backend.config import settings
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_origin],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Validation errors → 400 with consistent shape
 @app.exception_handler(RequestValidationError)
