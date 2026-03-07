@@ -6,8 +6,8 @@ import matplotlib.ticker as mticker
 # ── CONFIG ──────────────────────────────────────────────────────
 CSV_PATH         = "nifty250_log_return_volatility.csv"
 UNIVERSE         = "nifty250"
-INITIAL_CAPITAL  = 10_000_000
-START_DATE       = "2020-01-20"   # ← replaces START_YEAR; format: "YYYY-MM-DD"
+INITIAL_CAPITAL  = 1_000_000
+START_DATE       = "2020-03-20"   # ← replaces START_YEAR; format: "YYYY-MM-DD"
 
 # ── REBALANCE FREQUENCY ─────────────────────────────────────────
 # Set REBALANCE_FREQ to either:
@@ -20,14 +20,14 @@ REBALANCE_FREQ   = "monthly"   # "monthly" | "weekly"
 REBALANCE_MONTHS = 1           # used when REBALANCE_FREQ == "monthly"
 REBALANCE_WEEKS  = 1           # used when REBALANCE_FREQ == "weekly"
 
-LOOKBACK_1       = 6
+LOOKBACK_1       = 3
 LOOKBACK_2       = 12
 SKIP_MONTHS      = 0
 WEIGHT_1         = 0.5
 WEIGHT_2         = 0.5
 N_STOCKS         = 10
 MIN_PRICE        = 1.0
-MAX_PRICE        = 1_000_000
+MAX_PRICE        = 100_000
 CASH_BUFFER      = 0.005
 
 BROKERAGE        = 0.0003
