@@ -500,7 +500,7 @@ export default function DeployStrategy() {
     setBtError(null);
 
     try {
-      const result = await postJSON(`${BASE_URL}/api/strategy/backtest`, config);
+      const result = await postJSON(`${BASE_URL}/strategy/backtest`, config);
       setBtConfig(config);
       setBtResult(result);
       setTimeout(() => setResultVisible(true), 80);
