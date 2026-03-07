@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { useAuth } from "../components/Authcontext.jsx";
 
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
@@ -8,6 +9,7 @@ const SYS  = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, s
 const MONO = `'Courier New', Courier, monospace`;
 
 export default function Login() {
+  const { refresh } = useAuth();
   useEffect(() => { document.title = "Login — MAT System"; }, []);
 
   const navigate = useNavigate();
@@ -44,6 +46,7 @@ export default function Login() {
       setLoading(true);
       const response = await axios.post(`${API_BASE_URL}/auth/login`, formData, { withCredentials: true });
       console.log("Login Success:", response.data);
+      await refresh();
       navigate("/dashboard");
     } catch (error) {
       setServerError(error.response?.data?.message || "Login failed. Please try again.");
