@@ -7,6 +7,7 @@ from backend.models import User, UserBrokerLink
 from backend.schemas.auth import RegisterRequest, LoginRequest, UserOut
 from backend.core.security import hash_password, verify_password, create_access_token
 from backend.core.deps import get_current_user
+from backend.config import settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -94,8 +95,8 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
             value=token,
             httponly=True,
             max_age=COOKIE_MAX_AGE,
-            samesite="lax",
-            secure=False,   # set True in production (HTTPS)
+            samesite="none" if settings.cookie_secure else "lax",
+            secure=settings.cookie_secure,
         )
 
         return {
