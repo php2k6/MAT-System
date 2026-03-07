@@ -1,60 +1,40 @@
-import { useEffect, useState } from "react";
+import { useAuth } from "../components/Authcontext.jsx";
 import axios from "axios";
 import AuthGate from "../components/Authgate.jsx";
 import Dashboard from "./Dashboard.jsx";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  withCredentials: true,
+});
 
 export default function Home() {
-  const [state, setState] = useState("loading");
-
-  const api = axios.create({
-    baseURL: `${API_BASE_URL}`,
-    withCredentials: true
-  });
-
-  useEffect(() => {
-    const initialize = async () => {
-      try {
-        // Run in parallel (important)
-        const [authRes, brokerRes] = await Promise.all([
-          api.get("/auth/me"),
-          api.get("/broker/status")
-        ]);
-
-        if (!authRes.data.user) {
-          setState("unauthenticated");
-          return;
-        }
-
-        if (!brokerRes.data.brokerConnected) {
-          setState("no-broker");
-          return;
-        }
-
-        setState("ready"); // Fully active
-      } catch (err) {
-        setState("unauthenticated");
-      }
-    };
-
-    initialize();
-  }, []);
+  const { user, brokerConnected, loading } = useAuth();
 
   const handleConnectBroker = async () => {
     try {
-      await api.post("/broker/connect");
-      setState("ready");
+      const res = await api.post("/broker/connect");
+      if (res.data.success && res.data.redirectUrl) {
+        window.location.href = res.data.redirectUrl; // ✅ OAuth redirect
+      }
     } catch (err) {
-      console.error("Broker connection failed");
+      console.error("Broker connection failed", err);
     }
   };
 
-  // If not ready, show AuthGate
+  // Derive state from shared auth context
+  const state = loading
+    ? "loading"
+    : !user
+    ? "unauthenticated"
+    : !brokerConnected
+    ? "no-broker"
+    : "ready";
+
   if (state !== "ready") {
     return (
-        
       <AuthGate
         state={state}
         onConnectBroker={handleConnectBroker}
@@ -62,8 +42,5 @@ export default function Home() {
     );
   }
 
-  // REAL DASHBOARD CONTENT
-  return (
-   <Dashboard/>
-  );
+  return <Dashboard />;
 }
