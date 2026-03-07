@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import strategies, backtest, portfolio
+from backend.routers import strategies, backtest, portfolio, broker
 from backend.routers import auth
 from backend.database import init_db
 from backend.config import settings
@@ -26,6 +26,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     )
 
 app.include_router(auth.router)
+app.include_router(broker.router)
 app.include_router(strategies.router)
 app.include_router(backtest.router)
 app.include_router(portfolio.router)
