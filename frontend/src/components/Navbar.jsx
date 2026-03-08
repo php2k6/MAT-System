@@ -3,7 +3,7 @@ import { useAuth } from "../components/Authcontext.jsx";
 import axios from "axios";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
-const SYS  = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif`;
+const SYS = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif`;
 const MONO = `'Courier New', Courier, monospace`;
 
 const api = axios.create({
@@ -37,10 +37,10 @@ export default function Navbar() {
     }
   };
 
-  const isOnline    = user && brokerConnected;
+  const isOnline = user && brokerConnected;
   const statusLabel = isOnline ? "Broker Connected" : user ? "Broker Offline" : "Not Authenticated";
   const statusColor = isOnline ? "#1b6f3e" : user ? "#9a5000" : "#888";
-  const dotColor    = isOnline ? "#2f9e44" : user ? "#e67700" : "#bbb";
+  const dotColor = isOnline ? "#2f9e44" : user ? "#e67700" : "#bbb";
 
   return (
     <>
@@ -119,8 +119,7 @@ export default function Navbar() {
           transition: background 0.14s, color 0.14s;
           display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
         }
-        .nb-btn-ghost   { background: #fff; color: #333; border: 1px solid #ccc; }
-        .nb-btn-ghost:hover { background: #f5f5f5; border-color: #999; }
+
         .nb-btn-primary { background: #222; color: #fff; }
         .nb-btn-primary:hover { background: #3a3a3a; }
         .nb-btn-danger  { background: #fff; color: #c62828; border: 1px solid #e0a0a0; }
@@ -145,23 +144,25 @@ export default function Navbar() {
           <span className="nb-logo-text">MAT-System</span>
         </Link>
 
-        {/* Status pill */}
-        {!loading && (
-          <div className="nb-status">
-            <div
-              className={`nb-status-dot ${isOnline ? "pulse" : ""}`}
-              style={{ background: dotColor }}
-            />
-            <span className="nb-status-label" style={{ color: statusColor }}>
-              {statusLabel}
-            </span>
-          </div>
-        )}
+
 
         {/* Right actions */}
         <div className="nb-actions">
 
           {loading && <div className="nb-skeleton" />}
+
+          {/* Status pill */}
+          {!loading && (
+            <div className="nb-status">
+              <div
+                className={`nb-status-dot ${isOnline ? "pulse" : ""}`}
+                style={{ background: dotColor }}
+              />
+              <span className="nb-status-label" style={{ color: statusColor }}>
+                {statusLabel}
+              </span>
+            </div>
+          )}
 
           {!loading && !user && (
             <Link to="/login" className="nb-btn nb-btn-primary">
@@ -186,9 +187,6 @@ export default function Navbar() {
             <>
               <span className="nb-user">{user.email}</span>
               <div className="nb-div" />
-              <Link to="/dashboard" className="nb-btn nb-btn-ghost">
-                Dashboard
-              </Link>
               <button className="nb-btn nb-btn-danger" onClick={handleLogout}>
                 Logout
               </button>
