@@ -253,8 +253,6 @@ export default function Dashboard() {
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         .db-root {
-          min-height: calc(100vh - 56px);
-          background: #f2f2f2;
           padding: 28px 28px 72px;
           font-family: ${SYS};
         }
