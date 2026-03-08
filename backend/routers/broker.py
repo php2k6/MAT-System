@@ -193,4 +193,4 @@ def broker_callback(
         db.rollback()
         return RedirectResponse(f"{_err_redirect}?status=error&reason=db_error")
 
-    return RedirectResponse(f"{settings.frontend_origin}/dashboard?broker=connected")
+    return RedirectResponse(f"{settings.frontend_origin}/dashboard?status=connected")
