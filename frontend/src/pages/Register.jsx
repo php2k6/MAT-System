@@ -60,7 +60,7 @@ export default function Register() {
   };
 
   const fields = [
-    { id: "name",            type: "text",     label: "Full Name",       placeholder: "John Doe",          autoComplete: "name" },
+    { id: "name",            type: "text",     label: "Full Name",       placeholder: "Full Name",          autoComplete: "name" },
     { id: "email",           type: "email",    label: "Email",           placeholder: "you@example.com",   autoComplete: "email" },
     { id: "password",        type: "password", label: "Password",        placeholder: "••••••••",          autoComplete: "new-password" },
     { id: "confirmPassword", type: "password", label: "Confirm Password",placeholder: "••••••••",          autoComplete: "new-password" },
