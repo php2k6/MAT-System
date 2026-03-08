@@ -1,7 +1,7 @@
 import uuid
 from sqlalchemy import (
     Column, Text, VARCHAR, Boolean, Date, TIMESTAMP,
-    Integer, Numeric, ForeignKey, UniqueConstraint, CheckConstraint,
+    Integer, Numeric, ForeignKey, SmallInteger,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -25,6 +25,7 @@ class User(Base):
     broker_sessions  = relationship("BrokerSession",  back_populates="user", cascade="all, delete-orphan")
     user_broker_link = relationship("UserBrokerLink", back_populates="user", uselist=False, cascade="all, delete-orphan")
     strategies       = relationship("Strategy",       back_populates="user", cascade="all, delete-orphan")
+    rebalance_queues = relationship("RebalanceQueue",  back_populates="user", cascade="all, delete-orphan")
 
 
 # ---------------------------------------------------------------------------
@@ -62,48 +63,41 @@ class UserBrokerLink(Base):
 # ---------------------------------------------------------------------------
 # Strategies
 #
-#   rebalance_freq  : 1–5  (weekly, Mon–Fri)  →  is_monthly = False
-#                     1–28 (day of month)      →  is_monthly = True
-#   lb_period_1/2   : lookback periods in weeks
+#   rebalance_freq  : N months (is_monthly=True) or N weeks (is_monthly=False)
+#   lb_period_1/2   : lookback periods in months
+#   status          : "active" | "paused" | "stopped"
+#   next_rebalance_date starts as start_date; advanced on each queue insertion
 # ---------------------------------------------------------------------------
 class Strategy(Base):
     __tablename__ = "strategies"
 
-    __table_args__ = (
-        CheckConstraint(
-            """
-            (is_monthly = FALSE AND rebalance_day BETWEEN 1 AND 5)
-            OR
-            (is_monthly = TRUE  AND rebalance_day BETWEEN 1 AND 28)
-            """,
-            name="ck_strategies_rebalance_day_range",
-        ),
-    )
-
     strat_id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id             = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
 
-    universe            = Column(Integer, nullable=False)           # e.g. Nifty50=50, Nifty250=250
-    n_stocks            = Column(Integer, nullable=False)           # number of stocks to hold
+    universe            = Column(Integer, nullable=False)           # e.g. 50, 100, 150, 250
+    n_stocks            = Column(Integer, nullable=False)
 
-    lb_period_1         = Column(Integer, nullable=False)           # lookback period 1 (weeks)
-    lb_period_2         = Column(Integer, nullable=False)           # lookback period 2 (weeks)
+    lb_period_1         = Column(Integer, nullable=False)           # lookback 1 in months
+    lb_period_2         = Column(Integer, nullable=False)           # lookback 2 in months
 
-    price_cap           = Column(Numeric(20, 8),  nullable=True)    # max stock price filter
+    price_cap           = Column(Numeric(20, 8),  nullable=True)
     capital             = Column(Numeric(20, 8),  nullable=False)
     unused_capital      = Column(Numeric(20, 8),  nullable=False, default=0)
     buffer_capital      = Column(Numeric(20, 8),  nullable=False, default=0)
 
-    rebalance_freq      = Column(Integer, nullable=False)           # period multiple (e.g. every N weeks/months)
+    rebalance_freq      = Column(Integer, nullable=False)           # N months or N weeks
     is_monthly          = Column(Boolean, nullable=False, default=False)
-    rebalance_day       = Column(Integer, nullable=False)           # weekday 1-5 OR day-of-month 1-28
 
     next_rebalance_date = Column(Date, nullable=True)
     start_date          = Column(Date, nullable=False)
     market_value        = Column(Numeric(20, 8),  nullable=False, default=0)
 
-    user      = relationship("User",      back_populates="strategies")
-    portfolio = relationship("Portfolio", back_populates="strategy", cascade="all, delete-orphan")
+    # "active" | "paused" | "stopped"
+    status              = Column(VARCHAR(20), nullable=False, default="stopped")
+
+    user              = relationship("User",           back_populates="strategies")
+    portfolio         = relationship("Portfolio",      back_populates="strategy",        cascade="all, delete-orphan")
+    rebalance_history = relationship("RebalanceQueue", back_populates="strategy",        cascade="all, delete-orphan", order_by="RebalanceQueue.queued_at.desc()")
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +111,35 @@ class Portfolio(Base):
     value    = Column(Numeric(20, 8), nullable=False)
 
     strategy = relationship("Strategy", back_populates="portfolio")
+
+
+# ---------------------------------------------------------------------------
+# Rebalance Queue
+#
+#   One row per strategy pending rebalance (UNIQUE on strat_id).
+#   status : "pending"    → waiting to be picked up by the execution scheduler
+#            "in_progress" → MATEngine is running right now
+#            "done"        → completed successfully (row cleaned up after)
+#            "failed"      → unrecoverable error; needs manual review
+#            "skipped"     → LC detected / market closed; will retry next run
+# ---------------------------------------------------------------------------
+class RebalanceQueue(Base):
+    __tablename__ = "rebalance_queue"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    strat_id     = Column(UUID(as_uuid=True), ForeignKey("strategies.strat_id", ondelete="CASCADE"), nullable=False)
+    user_id      = Column(UUID(as_uuid=True), ForeignKey("users.user_id",       ondelete="CASCADE"), nullable=False)
+
+    status       = Column(VARCHAR(20),  nullable=False, default="pending")  # pending | in_progress | done | failed | skipped
+    reason       = Column(Text,         nullable=True)                       # e.g. "LC_DETECTED", "MARKET_CLOSED"
+    retry_count  = Column(SmallInteger, nullable=False, default=0)
+
+    queued_at    = Column(TIMESTAMP, nullable=False, server_default=func.now())
+    attempted_at = Column(TIMESTAMP, nullable=True)
+    completed_at = Column(TIMESTAMP, nullable=True)
+
+    strategy = relationship("Strategy",       back_populates="rebalance_history")
+    user     = relationship("User",           back_populates="rebalance_queues")
 
 
 # ---------------------------------------------------------------------------
