@@ -14,24 +14,30 @@ const api = axios.create({
 });
 
 export default function Home() {
-  const { user, brokerConnected, loading, refreshAuth } = useAuth(); 
+  const { user, brokerConnected, loading, refresh } = useAuth();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
   // Handle broker OAuth callback
   useEffect(() => {
-    const brokerStatus = searchParams.get("broker");
+    const handle = async () => {
+      const brokerStatus = searchParams.get("status");
 
-    if (brokerStatus === "connected") {
-      toast.success("Broker connected successfully!");
-      refreshAuth(); //  re-fetch user/broker state so brokerConnected becomes true
-      navigate("/dashboard", { replace: true }); // clean the URL
-    }
+      if (brokerStatus === "connected") {
+        await refresh();
+        navigate("/dashboard", { replace: true });
+        toast.success("Broker connected successfully!");
+        
+      }
 
-    if (brokerStatus === "failed") {
-      toast.error("Broker connection failed. Please try again.");
-      navigate("/", { replace: true });
-    }
+      if (brokerStatus === "error") {
+        const brokerReason = searchParams.get("reason") || "unknown_error";
+        navigate("/", { replace: true });
+        toast.error(`Broker connection failed: ${brokerReason}`);
+        
+      }
+    };
+    handle();
   }, []);
 
   const handleConnectBroker = async () => {

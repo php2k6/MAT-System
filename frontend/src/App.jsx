@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Outlet } from "react-router-dom";
+import { Toaster } from "react-hot-toast";
 import { AuthProvider } from "./components/Authcontext.jsx";
 import Navbar from "./components/Navbar.jsx";
 import Home from "./pages/home.jsx";
@@ -22,6 +23,7 @@ function Layout() {
 function App() {
   return (
     <AuthProvider>
+      <Toaster position="top-right" />
       <BrowserRouter>
         <Routes>
 
@@ -29,7 +31,7 @@ function App() {
           <Route element={<Layout />}>
             <Route element={<AppLayout />}>
               <Route path="/" element={<Home />} />
-              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/dashboard" element={<Home />} />
               <Route path="/deploy" element={<DeployStrategy />} />
             </Route>
           </Route>  {/* ← this closing tag was missing */}
