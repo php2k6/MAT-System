@@ -550,7 +550,7 @@ export default function DeployStrategy() {
       <style>{`
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        .dp-root  { min-height: calc(100vh - 60px); background: #f2f2f2; padding: 28px 28px 72px; font-family: ${SYS}; }
+        .dp-root  { min-height: calc(100vh - 60px); background: #f2f2f2; padding: 28px 20px 72px; font-family: ${SYS}; }
         .dp-wrap  { max-width: 1180px; margin: 0 auto; opacity: 0; transform: translateY(10px); transition: opacity 0.35s ease, transform 0.35s ease; }
         .dp-wrap.mounted { opacity: 1; transform: translateY(0); }
 
@@ -558,7 +558,7 @@ export default function DeployStrategy() {
         .dp-layout { display: grid; grid-template-columns: 1fr 296px; gap: 14px; align-items: start; }
         @media (max-width: 840px) { .dp-layout { grid-template-columns: 1fr; } .dp-root { padding: 16px 14px 60px; } }
 
-        .dp-side { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 14px; }
+        .dp-side { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 80px; }
 
         /* Grid helpers */
         .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
