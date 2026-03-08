@@ -6,6 +6,7 @@ from backend.routers import strategies, portfolio, broker
 from backend.routers import auth
 from backend.database import init_db
 from backend.config import settings
+from backend.scheduler import start_scheduler, stop_scheduler
 
 app = FastAPI()
 
@@ -34,6 +35,12 @@ app.include_router(portfolio.router)
 @app.on_event("startup")
 def on_startup():
     init_db()
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    stop_scheduler()
 
 
 @app.get("/")

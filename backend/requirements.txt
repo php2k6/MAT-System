@@ -11,3 +11,5 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 email-validator==2.1.0
 fyers-apiv3==3.1.11
+apscheduler==3.10.4
+psycopg2-binary
