@@ -24,8 +24,8 @@ export default function Home() {
 
     if (brokerStatus === "connected") {
       toast.success("Broker connected successfully!");
-      refreshAuth(); // 👈 re-fetch user/broker state so brokerConnected becomes true
-      navigate("/", { replace: true }); // clean the URL
+      refreshAuth(); //  re-fetch user/broker state so brokerConnected becomes true
+      navigate("/dashboard", { replace: true }); // clean the URL
     }
 
     if (brokerStatus === "failed") {
