@@ -7,7 +7,7 @@ from fyers_apiv3 import fyersModel
 from sqlalchemy.orm import Session
 
 from backend.core.deps import get_current_user
-from backend.core.security import decrypt_token, encrypt_token
+from backend.core.security import encrypt_token
 from backend.database import get_db
 from backend.models import BrokerSession, User, UserBrokerLink
 from backend.config import settings
@@ -71,40 +71,9 @@ def broker_status(
 
     today = date.today()
 
-    # Token generated today — still valid
+    # Fyers tokens are valid for the current trading day only — no refresh supported
     if session.token_date == today:
         return {"success": True, "brokerConnected": True}
-
-    # Token from previous day — attempt silent refresh (valid up to 15 days)
-    days_old = (today - session.token_date).days
-    if days_old <= 15:
-        try:
-            refresh_token = decrypt_token(session.refresh_token_encrypted)
-
-            refresh_session = fyersModel.SessionModel(
-                client_id=settings.fyers_app_id,
-                secret_key=settings.fyers_secret_key,
-                redirect_uri=settings.fyers_redirect_uri,
-                response_type="code",
-                grant_type="refresh_token",
-            )
-            refresh_session.set_token(refresh_token)
-            response = refresh_session.generate_token()
-
-            if response.get("s") == "ok":
-                new_access  = response.get("access_token", "")
-                new_refresh = response.get("refresh_token", refresh_token)
-                if not new_access:
-                    raise ValueError("empty access token")
-
-                session.access_token_encrypted  = encrypt_token(new_access)
-                session.refresh_token_encrypted = encrypt_token(new_refresh)
-                session.token_date = today
-                db.commit()
-
-                return {"success": True, "brokerConnected": True}
-        except Exception:
-            pass
 
     return {"success": True, "brokerConnected": False, "reason": "TOKEN_EXPIRED"}
 

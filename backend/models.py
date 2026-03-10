@@ -2,7 +2,7 @@ import uuid
 from sqlalchemy import (
     Column, Text, VARCHAR, Boolean, Date, TIMESTAMP,
     Integer, Numeric, ForeignKey, SmallInteger,
-    func,
+    UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -97,7 +97,29 @@ class Strategy(Base):
 
     user              = relationship("User",           back_populates="strategies")
     portfolio         = relationship("Portfolio",      back_populates="strategy",        cascade="all, delete-orphan")
+    holdings          = relationship("Holdings",       back_populates="strategy",        cascade="all, delete-orphan")
     rebalance_history = relationship("RebalanceQueue", back_populates="strategy",        cascade="all, delete-orphan", order_by="RebalanceQueue.queued_at.desc()")
+
+
+# ---------------------------------------------------------------------------
+# Holdings  (what the strategy currently owns — synced after each rebalance)
+# ---------------------------------------------------------------------------
+class Holdings(Base):
+    __tablename__ = "holdings"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    strat_id    = Column(UUID(as_uuid=True), ForeignKey("strategies.strat_id", ondelete="CASCADE"), nullable=False)
+    ticker      = Column(VARCHAR(20), nullable=False)         # e.g. "INFY"
+    qty         = Column(Integer,     nullable=False)
+    avg_price   = Column(Numeric(20, 8), nullable=True)       # average acquisition price
+    last_price  = Column(Numeric(20, 8), nullable=True)       # LTP at last rebalance
+    updated_at  = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+
+    strategy = relationship("Strategy", back_populates="holdings")
+
+    __table_args__ = (
+        UniqueConstraint("strat_id", "ticker", name="uq_holdings_strat_ticker"),
+    )
 
 
 # ---------------------------------------------------------------------------
