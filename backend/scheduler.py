@@ -16,6 +16,7 @@ Two APScheduler jobs that run daily on IST:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timezone
 from dateutil.relativedelta import relativedelta
@@ -27,7 +28,6 @@ from sqlalchemy import func
 
 from backend.database import SessionLocal
 from backend.models import RebalanceQueue, Strategy
-
 logger = logging.getLogger(__name__)
 
 # ── Singleton scheduler instance ─────────────────────────────────────────────
@@ -131,15 +131,12 @@ def queue_rebalances() -> None:
 
 def drain_rebalance_queue() -> None:
     """
-    Mid-market execution sweep:
+    Mid-market execution sweep (12:00 IST):
     - Pick up all "pending" rows
-    - Call MATEngine.run_rebalance() for each
+    - Run MATEngine for each
     - Mark done / skipped / failed based on result
-
-    MATEngine is imported here (lazy) to avoid circular imports at startup.
     """
-    # Lazy import — MATEngine will be implemented later
-    # from backend.mat_engine import MATEngine
+    from backend.mat_engine import MATEngine   # lazy import avoids circular
 
     db  = SessionLocal()
     now = datetime.now(timezone.utc)
@@ -151,41 +148,52 @@ def drain_rebalance_queue() -> None:
         )
 
         for entry in pending:
+            entry_id = entry.id   # save before any potential rollback
+
+            # Mark in-progress and commit so other workers don't double-pick
             entry.status       = "in_progress"
             entry.attempted_at = now
             db.commit()
 
             try:
-                # ── Placeholder until MATEngine is built ──────────────────
-                # result = MATEngine(entry.strat_id, db).run_rebalance()
-                # if result.skipped:
-                #     entry.status = "skipped"
-                #     entry.reason = result.reason
-                # else:
-                #     entry.status = "done"
-                #     entry.completed_at = datetime.now(timezone.utc)
-                #     (row kept in table as history — no delete)
-                # ─────────────────────────────────────────────────────────
-                logger.info(
-                    "drain_rebalance_queue: strat %s — MATEngine not yet implemented, marking skipped",
-                    entry.strat_id,
-                )
-                entry.status = "skipped"
-                entry.reason = "MAT_ENGINE_NOT_IMPLEMENTED"
+                result = MATEngine(entry, db).run_rebalance()
+
+                if result.skipped:
+                    entry.status      = "skipped"
+                    entry.reason      = (
+                        result.reason
+                        + (" | " + json.dumps(result.details) if result.details else "")
+                    )
+                    entry.retry_count = (entry.retry_count or 0) + 1
+                elif result.success:
+                    entry.status       = "done"
+                    entry.completed_at = datetime.now(timezone.utc)
+                else:
+                    entry.status = "failed"
+                    entry.reason = result.reason
+
+                db.commit()
 
             except Exception as exc:
-                entry.status = "failed"
-                entry.reason = str(exc)[:500]
-                logger.exception(
-                    "drain_rebalance_queue: strat %s failed — %s",
-                    entry.strat_id, exc,
+                # Engine called db.rollback() before raising — re-fetch entry
+                db.rollback()
+                entry = (
+                    db.query(RebalanceQueue)
+                    .filter(RebalanceQueue.id == entry_id)
+                    .first()
                 )
-
-            db.commit()
+                if entry:
+                    entry.status = "failed"
+                    entry.reason = str(exc)[:500]
+                    db.commit()
+                logger.exception(
+                    "drain_rebalance_queue: MATEngine raised for entry %s — %s",
+                    entry_id, exc,
+                )
 
     except Exception:
         db.rollback()
-        logger.exception("drain_rebalance_queue: unexpected error")
+        logger.exception("drain_rebalance_queue: unexpected outer error")
     finally:
         db.close()
 
