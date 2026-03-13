@@ -10,8 +10,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# ── TRANSACTION COST CONSTANTS (NSE) ────────────────────────────────────────
-_BROKERAGE       = 0.0003
+# ── TRANSACTION COST CONSTANTS (NSE/Fyers CNC) ─────────────────────────────
+# Fyers charges zero brokerage on equity delivery (CNC).
+_BROKERAGE       = 0.0
 _STT_SELL        = 0.001
 _EXCHANGE_CHARGE = 0.0000325
 _SEBI_CHARGE     = 0.000001
