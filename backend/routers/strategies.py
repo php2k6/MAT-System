@@ -4,8 +4,9 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from backend.backtest_engine import build_series, build_stats, run_backtest
+from backend.core.deps import get_current_user
 from backend.database import get_db
-from backend.models import StockPrice
+from backend.models import StockPrice, Strategy, User
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
@@ -33,6 +34,10 @@ class BacktestRequest(BaseModel):
         if v is None or (isinstance(v, str) and v.strip() == ""):
             return 1_000_000_000.0
         return float(v)
+
+
+class StrategyActionRequest(BaseModel):
+    action: str = Field(..., pattern="^(pause|resume|stop|restart)$")
     
 
 @router.post("/backtest")
@@ -86,3 +91,34 @@ def run_backtest_api(req: BacktestRequest, db: Session = Depends(get_db)):
         "stats":   build_stats(result_trimmed, req.universe, req.capital),
         "series":  build_series(result_trimmed),
     }
+
+
+@router.post("/action")
+def strategy_action(
+    req: StrategyActionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    strategy = (
+        db.query(Strategy)
+        .filter(Strategy.user_id == user.user_id)
+        .order_by(Strategy.start_date.desc())
+        .first()
+    )
+    if not strategy:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "message": "No strategy deployed"},
+        )
+
+    action_to_status = {
+        "pause": "paused",
+        "resume": "active",
+        "stop": "stopped",
+        "restart": "active",
+    }
+    strategy.status = action_to_status[req.action]
+    db.commit()
+    db.refresh(strategy)
+
+    return {"success": True, "status": strategy.status}

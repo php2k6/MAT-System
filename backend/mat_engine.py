@@ -54,8 +54,9 @@ from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, S
 
 logger = logging.getLogger(__name__)
 
-# ── Transaction-cost constants (matching backtest) ────────────────────────────
-BROKERAGE       = 0.0003
+# ── Transaction-cost constants (matching backtest / Fyers CNC) ───────────────
+# Fyers charges zero brokerage on equity delivery (CNC).
+BROKERAGE       = 0.0
 STT_SELL        = 0.001
 EXCHANGE_CHARGE = 0.0000325
 SEBI_CHARGE     = 0.000001
