@@ -9,7 +9,7 @@ Run:
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import os
 import sys
 from types import SimpleNamespace
@@ -17,13 +17,15 @@ from unittest import TestCase
 from unittest.mock import patch
 from uuid import uuid4
 
+from fastapi import HTTPException
+
 # Ensure project root is importable whether tests run from repo root or tests/.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from backend.routers import portfolio as portfolio_router
-from backend.routers.strategies import StrategyActionRequest, strategy_action
+from backend.routers.strategies import DeployStrategyRequest, StrategyActionRequest, deploy_strategy, strategy_action
 import unittest
 
 
@@ -54,6 +56,8 @@ class _FakeSession:
         self._query_results = list(query_results)
         self.commit_called = False
         self.refresh_called = False
+        self.flush_called = False
+        self.added = []
 
     def query(self, *args, **kwargs):
         if not self._query_results:
@@ -65,6 +69,12 @@ class _FakeSession:
 
     def refresh(self, _obj):
         self.refresh_called = True
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    def flush(self):
+        self.flush_called = True
 
 
 class TestApiContract(TestCase):
@@ -183,6 +193,76 @@ class TestApiContract(TestCase):
         self.assertEqual(strategy.status, "paused")
         self.assertTrue(fake_db.commit_called)
         self.assertTrue(fake_db.refresh_called)
+
+    def test_deploy_strategy_maps_parameters_and_prechecks_funds(self):
+        broker_session = SimpleNamespace(id=uuid4())
+        existing_strategy = SimpleNamespace(status="active")
+
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=broker_session),
+            _FakeQuery(all_result=[existing_strategy]),
+        ])
+
+        req = DeployStrategyRequest(
+            universe="nifty50",
+            numStocks=10,
+            lookback1=6,
+            lookback2=12,
+            priceCap=None,
+            capital=500000,
+            rebalanceType="monthly",
+            rebalanceFreq=1,
+            startingDate=date.today() + timedelta(days=1),
+        )
+
+        with patch("backend.routers.strategies._get_available_balance", return_value=500000.0):
+            body = deploy_strategy(req=req, db=fake_db, user=self.user)
+
+        self.assertTrue(body["success"])
+        self.assertEqual(body["status"], "active")
+        self.assertEqual(existing_strategy.status, "stopped")
+        self.assertTrue(fake_db.commit_called)
+        self.assertTrue(fake_db.refresh_called)
+        self.assertEqual(len(fake_db.added), 1)
+
+        new_strategy = fake_db.added[0]
+
+        self.assertEqual(new_strategy.universe, 50)
+        self.assertEqual(new_strategy.n_stocks, 10)
+        self.assertEqual(new_strategy.lb_period_1, 6)
+        self.assertEqual(new_strategy.lb_period_2, 12)
+        self.assertEqual(float(new_strategy.capital), 500000.0)
+        self.assertEqual(float(new_strategy.unused_capital), 500000.0)
+        self.assertEqual(new_strategy.is_monthly, True)
+        self.assertEqual(new_strategy.rebalance_freq, 1)
+        self.assertEqual(new_strategy.status, "active")
+        self.assertEqual(new_strategy.start_date, date.today() + timedelta(days=1))
+        self.assertEqual(new_strategy.next_rebalance_date, date.today() + timedelta(days=1))
+
+    def test_deploy_strategy_rejects_balance_mismatch(self):
+        broker_session = SimpleNamespace(id=uuid4())
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=broker_session),
+        ])
+
+        req = DeployStrategyRequest(
+            universe="nifty50",
+            numStocks=10,
+            lookback1=6,
+            lookback2=12,
+            priceCap=None,
+            capital=500000,
+            rebalanceType="monthly",
+            rebalanceFreq=1,
+            startingDate=date.today() + timedelta(days=1),
+        )
+
+        with patch("backend.routers.strategies._get_available_balance", return_value=499999.0):
+            with self.assertRaises(HTTPException) as ctx:
+                deploy_strategy(req=req, db=fake_db, user=self.user)
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("exactly match deploy capital", ctx.exception.detail["message"])
 
 
 if __name__ == "__main__":

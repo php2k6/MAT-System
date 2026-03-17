@@ -1,44 +1,49 @@
+from datetime import date, timedelta
+
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
+from fyers_apiv3 import fyersModel
 from sqlalchemy.orm import Session
 
 from backend.backtest_engine import build_series, build_stats, run_backtest
 from backend.core.deps import get_current_user
+from backend.core.security import decrypt_token
+from backend.config import settings
 from backend.database import get_db
-from backend.models import StockPrice, Strategy, User
+from backend.models import BrokerSession, StockPrice, Strategy, User
+from backend.schemas.strategy import BacktestRequest, DeployStrategyRequest, StrategyActionRequest
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
 
-class BacktestRequest(BaseModel):
-    universe:           str   = Field(..., pattern="^(nifty50|nifty100|nifty150|nifty250)$")
-    numStocks:          int   = Field(..., ge=1, le=50)
-    lookback1:          int   = Field(..., ge=1, le=24)
-    lookback2:          int   = Field(..., ge=1, le=36)
-    priceCap:           float = Field(default=1_000_000_000.0)
-    capital:            float = Field(..., gt=0)
-    rebalanceType:      str   = Field(..., pattern="^(monthly|weekly)$")
-    rebalanceFreq:      int   = Field(..., ge=1, le=52)
-    backtestStartDate:  str                        # YYYY-MM-DD anchor for rebalance schedule
-    startingDate:       str                        # filler — strategy deployment start date
-
-    @field_validator("lookback1", "lookback2", "numStocks", "rebalanceFreq", mode="before")
-    @classmethod
-    def coerce_int(cls, v):
-        return int(v) if isinstance(v, str) and v.strip() != "" else v
-
-    @field_validator("priceCap", mode="before")
-    @classmethod
-    def coerce_price_cap(cls, v):
-        if v is None or (isinstance(v, str) and v.strip() == ""):
-            return 1_000_000_000.0
-        return float(v)
+UNIVERSE_TO_INT = {
+    "nifty50": 50,
+    "nifty100": 100,
+    "nifty150": 150,
+    "nifty250": 250,
+}
 
 
-class StrategyActionRequest(BaseModel):
-    action: str = Field(..., pattern="^(pause|resume|stop|restart)$")
-    
+def _get_available_balance(broker_session: BrokerSession) -> float:
+    token = decrypt_token(broker_session.access_token_encrypted)
+    fyers = fyersModel.FyersModel(
+        client_id=settings.fyers_app_id,
+        token=token,
+        is_async=False,
+        log_path="",
+    )
+
+    resp = fyers.funds()
+    if resp.get("s") != "ok":
+        raise RuntimeError(f"FUNDS_FAILED:{resp}")
+
+    for item in resp.get("fund_limit", []):
+        title = item.get("title", "")
+        if "Available Balance" in title or "available_balance" in title.lower():
+            return float(item.get("equityAmount", item.get("val", 0)))
+
+    return sum(float(i.get("equityAmount", i.get("val", 0))) for i in resp.get("fund_limit", []))
+
 
 @router.post("/backtest")
 def run_backtest_api(req: BacktestRequest, db: Session = Depends(get_db)):
@@ -90,6 +95,85 @@ def run_backtest_api(req: BacktestRequest, db: Session = Depends(get_db)):
         "success": True,
         "stats":   build_stats(result_trimmed, req.universe, req.capital),
         "series":  build_series(result_trimmed),
+    }
+
+
+@router.post("/deploy")
+def deploy_strategy(
+    req: DeployStrategyRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    broker_session = (
+        db.query(BrokerSession)
+        .filter(
+            BrokerSession.user_id == user.user_id,
+            BrokerSession.token_date == date.today(),
+        )
+        .order_by(BrokerSession.created_at.desc())
+        .first()
+    )
+    if not broker_session:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"success": False, "message": "Connect broker before deploying strategy"},
+        )
+
+    try:
+        available_balance = _get_available_balance(broker_session)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"success": False, "message": "Unable to verify broker funds at the moment"},
+        )
+
+    capital = float(req.capital)
+    if round(available_balance, 2) != round(capital, 2):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "message": f"Broker available balance must exactly match deploy capital. Available={available_balance:.2f}, Requested={capital:.2f}",
+            },
+        )
+
+    # Ensure one live strategy per user. Keep history, but stop any existing live one.
+    existing_live = (
+        db.query(Strategy)
+        .filter(Strategy.user_id == user.user_id)
+        .all()
+    )
+    for existing in existing_live:
+        if existing.status in {"active", "paused"}:
+            existing.status = "stopped"
+
+    strategy = Strategy(
+        user_id=user.user_id,
+        universe=UNIVERSE_TO_INT[req.universe],
+        n_stocks=req.numStocks,
+        lb_period_1=req.lookback1,
+        lb_period_2=req.lookback2,
+        price_cap=req.priceCap,
+        capital=capital,
+        unused_capital=capital,
+        buffer_capital=capital * 0.005,
+        rebalance_freq=req.rebalanceFreq,
+        is_monthly=req.rebalanceType == "monthly",
+        next_rebalance_date=req.startingDate,
+        start_date=req.startingDate,
+        market_value=capital,
+        status="active",
+    )
+    db.add(strategy)
+
+    db.commit()
+    db.refresh(strategy)
+
+    return {
+        "success": True,
+        "strategyId": str(strategy.strat_id),
+        "status": strategy.status,
+        "nextRebalance": strategy.next_rebalance_date.isoformat() if strategy.next_rebalance_date else None,
     }
 
 

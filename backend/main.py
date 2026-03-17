@@ -18,12 +18,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Validation errors → 400 with consistent shape
+# Validation errors → 400 with field-specific details for frontend forms
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
+    field_errors: dict[str, list[str]] = {}
+
+    for err in exc.errors():
+        loc = list(err.get("loc", []))
+        msg = err.get("msg", "Invalid value")
+
+        # Strip FastAPI transport prefixes like body/query/path.
+        while loc and loc[0] in {"body", "query", "path", "header", "cookie"}:
+            loc.pop(0)
+
+        field = ".".join(str(part) for part in loc) if loc else "non_field_error"
+        field_errors.setdefault(field, []).append(msg)
+
+    first_message = next(iter(field_errors.values()))[0] if field_errors else "Invalid input data"
+
     return JSONResponse(
         status_code=400,
-        content={"success": False, "message": "Invalid input data"},
+        content={
+            "success": False,
+            "message": first_message,
+            "errors": field_errors,
+        },
     )
 
 app.include_router(auth.router)
