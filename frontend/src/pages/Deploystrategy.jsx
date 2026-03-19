@@ -421,7 +421,14 @@ function ChartCard({ num, title, height, children }) {
 
 // ─── BACKTEST RESULT CHARTS ───────────────────────────────────────────────────
 function BacktestResult({ result, config, visible }) {
-  const { series, stats } = result;
+  const { stats } = result;
+
+  // Backend sends drawdown as decimal (0 to -1). Multiply by 100 so the
+  // chart Y-axis and tooltip show e.g. -36.00% instead of -0.36%
+  const series = result.series.map(d => ({
+    ...d,
+    drawdown: d.drawdown != null ? d.drawdown * 100 : null,
+  }));
 
   const xAxis = {
     dataKey: "date",
