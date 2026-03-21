@@ -15,14 +15,36 @@ async function postJSON(url, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+
+  // Always try to parse JSON; fall back to empty object
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || data.error || res.statusText || "Request failed");
+
+  if (!res.ok) {
+    // Backend error shape: { detail: { success: false, message: "..." } }
+    // Also handle flat { message } or { error } shapes for safety
+    const msg =
+      data?.detail?.message ||
+      data?.detail ||
+      data?.message ||
+      data?.error ||
+      res.statusText ||
+      "Request failed";
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  }
+
   return data;
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const TODAY    = new Date().toISOString().split("T")[0];
-const MIN_DATE = "2003-01-01";
+const MIN_DATE = "2016-01-01";
+
+// startingDate must be at least tomorrow per deploy API rules
+const TOMORROW = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().split("T")[0];
+})();
 
 const UNIVERSES = [
   { value: "nifty50",  label: "Nifty 50",  desc: "Large cap · 50 stocks"    },
@@ -43,25 +65,41 @@ const DEFAULT_FORM = {
   capital:       "",
   rebalanceType: "monthly",
   rebalanceFreq: 1,
-  startingDate:  TODAY,
+  startingDate:  TOMORROW,  // ≥ tomorrow required by deploy API
 };
 
 // ─── VALIDATION ───────────────────────────────────────────────────────────────
 function validateForm(form) {
   const errors = {};
-  if (!form.universe)                                  errors.universe  = "Select a universe";
-  if (!form.numStocks || Number(form.numStocks) < 1)   errors.numStocks = "Minimum 1 stock required";
-  if (Number(form.lookback1) === Number(form.lookback2)) errors.lookback2 = "Must differ from Period 1";
-  if (!form.capital || Number(form.capital) < 10000)   errors.capital   = "Minimum ₹10,000 required";
-  if (form.priceCap && Number(form.priceCap) <= 0)     errors.priceCap  = "Price cap must be positive";
-  if (!form.startingDate)                              errors.startingDate = "Starting date is required";
+  if (!form.universe)
+    errors.universe = "Select a universe";
+  if (!form.numStocks || Number(form.numStocks) < 1)
+    errors.numStocks = "Minimum 1 stock required";
+  if (Number(form.lookback1) === Number(form.lookback2))
+    errors.lookback2 = "Must differ from Period 1";
+  if (!form.capital || Number(form.capital) < 10000)
+    errors.capital = "Minimum ₹10,000 required";
+  if (form.priceCap && Number(form.priceCap) <= 0)
+    errors.priceCap = "Price cap must be positive";
+  if (!form.startingDate)
+    errors.startingDate = "Starting date is required";
+  return errors;
+}
+
+// Deploy adds an extra constraint: startingDate must be ≥ tomorrow
+function validateDeploy(form) {
+  const errors = validateForm(form);
+  if (form.startingDate && form.startingDate < TOMORROW)
+    errors.startingDate = "Starting date must be at least tomorrow";
   return errors;
 }
 
 // ─── FORMATTERS ───────────────────────────────────────────────────────────────
 const fmtPct   = v => (v !== null && v !== undefined) ? `${(Number(v) * 100).toFixed(2)}%` : "—";
 const fmtNum   = (v, d = 2) => (v !== null && v !== undefined) ? Number(v).toFixed(d) : "—";
-const fmtRupee = v => (v !== null && v !== undefined) ? `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}` : "—";
+const fmtRupee = v => (v !== null && v !== undefined)
+  ? `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
+  : "—";
 
 // ─── FONTS ────────────────────────────────────────────────────────────────────
 const SYS  = `'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif`;
@@ -175,14 +213,14 @@ function Hint({ children }) {
   );
 }
 
-// ─── ALERT BANNER (replaces ErrorBanner — handles both error & success) ───────
+// ─── ALERT BANNER ─────────────────────────────────────────────────────────────
 function AlertBanner({ type = "error", title, message, onDismiss }) {
   const styles = {
     error:   { bg: "#fff5f5", border: "#fca5a5", icon: "✕", titleColor: "#c62828", msgColor: "#7f1d1d" },
     success: { bg: "#f0fdf4", border: "#86efac", icon: "✓", titleColor: "#166534", msgColor: "#14532d" },
     warning: { bg: "#fffbeb", border: "#fcd34d", icon: "⚠", titleColor: "#92400e", msgColor: "#78350f" },
   };
-  const s = styles[type];
+  const s = styles[type] || styles.error;
   return (
     <div style={{ background: s.bg, border: `1px solid ${s.border}`, borderRadius: 8, padding: "12px 16px", marginTop: 12, display: "flex", justifyContent: "space-between", gap: 12, fontFamily: SYS }}>
       <div style={{ display: "flex", gap: 8 }}>
@@ -237,7 +275,7 @@ function DeployConfirmModal({ form, onConfirm, onCancel, loading }) {
         </div>
 
         <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 7, padding: "10px 13px", marginBottom: 20, fontSize: 12, color: "#78350f", lineHeight: 1.5 }}>
-          ⚠ This will deploy a live strategy. Ensure your capital is available and the parameters are correct.
+          ⚠ Ensure your broker is connected and available balance exactly matches the capital entered.
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
@@ -255,7 +293,7 @@ function DeployConfirmModal({ form, onConfirm, onCancel, loading }) {
 
 // ─── BACKTEST DATE MODAL ──────────────────────────────────────────────────────
 function BacktestDateModal({ onConfirm, onCancel }) {
-  const [date, setDate] = useState("2015-01-01");
+  const [date, setDate] = useState("2016-01-01");
 
   const isValid = date && date >= MIN_DATE && date < TODAY;
   const years   = isValid ? ((new Date() - new Date(date)) / (365.25 * 86400000)).toFixed(1) : 0;
@@ -264,10 +302,7 @@ function BacktestDateModal({ onConfirm, onCancel }) {
     { label: "1 Year",     date: new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split("T")[0] },
     { label: "3 Years",    date: new Date(new Date().setFullYear(new Date().getFullYear() - 3)).toISOString().split("T")[0] },
     { label: "5 Years",    date: new Date(new Date().setFullYear(new Date().getFullYear() - 5)).toISOString().split("T")[0] },
-    { label: "10 Years",   date: new Date(new Date().setFullYear(new Date().getFullYear() - 10)).toISOString().split("T")[0] },
-    { label: "Since 2015", date: "2015-01-01" },
-    { label: "Since 2010", date: "2010-01-01" },
-    { label: "Since 2003", date: "2003-01-01" },
+    { label: "Since 2016", date: "2016-01-01" },
   ];
 
   return (
@@ -292,7 +327,7 @@ function BacktestDateModal({ onConfirm, onCancel }) {
             />
           </div>
           {date && date < MIN_DATE && (
-            <div style={{ fontSize: 11, color: "#c62828", marginTop: 4, fontWeight: 500 }}>⚠ Data available from Jan 1, 2003 onwards</div>
+            <div style={{ fontSize: 11, color: "#c62828", marginTop: 4, fontWeight: 500 }}>⚠ Data available from Jan 1, 2016 onwards</div>
           )}
           {date && date >= TODAY && (
             <div style={{ fontSize: 11, color: "#c62828", marginTop: 4, fontWeight: 500 }}>⚠ Start date must be before today</div>
@@ -423,8 +458,7 @@ function ChartCard({ num, title, height, children }) {
 function BacktestResult({ result, config, visible }) {
   const { stats } = result;
 
-  // Backend sends drawdown as decimal (0 to -1). Multiply by 100 so the
-  // chart Y-axis and tooltip show e.g. -36.00% instead of -0.36%
+  // Backend sends drawdown as decimal (0 to -1); multiply by 100 for percentage display
   const series = result.series.map(d => ({
     ...d,
     drawdown: d.drawdown != null ? d.drawdown * 100 : null,
@@ -528,23 +562,18 @@ export default function DeployStrategy() {
   const [form,   setForm]   = useState(DEFAULT_FORM);
   const [errors, setErrors] = useState({});
 
-  // Loading states
   const [btLoading,  setBtLoading]  = useState(false);
   const [depLoading, setDepLoading] = useState(false);
 
-  // Modal visibility
   const [showBtModal,  setShowBtModal]  = useState(false);
   const [showDepModal, setShowDepModal] = useState(false);
 
-  // Alert banners
-  const [btAlert,  setBtAlert]  = useState(null); // { type, title, message }
+  const [btAlert,  setBtAlert]  = useState(null);
   const [depAlert, setDepAlert] = useState(null);
 
-  // Deployed strategy state — populated from backend response
-  // Shape: { id, status, universe, numStocks, capitalAllocated, rebalanceFreq, nextRebalance, deployedAt }
+  // Populated after successful deploy: { id, status, nextRebalance }
   const [deployedStrategy, setDeployedStrategy] = useState(null);
 
-  // Backtest results
   const [btResult,      setBtResult]      = useState(null);
   const [btConfig,      setBtConfig]      = useState(null);
   const [resultVisible, setResultVisible] = useState(false);
@@ -557,15 +586,16 @@ export default function DeployStrategy() {
     return () => clearTimeout(t);
   }, []);
 
-  // Generic field setter
   const setField = useCallback((key) => (e) => {
-    const val = e.target.type === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value;
+    const val = e.target.type === "number"
+      ? (e.target.value === "" ? "" : Number(e.target.value))
+      : e.target.value;
     setForm(prev => ({ ...prev, [key]: val }));
     setErrors(prev => ({ ...prev, [key]: undefined }));
   }, []);
 
   function setRebalanceType(type) {
-    setForm(prev => ({ ...prev, rebalanceType: type, rebalanceFreq: 1, startingDate: TODAY }));
+    setForm(prev => ({ ...prev, rebalanceType: type, rebalanceFreq: 1, startingDate: TOMORROW }));
   }
 
   // ── BACKTEST ──────────────────────────────────────────────────────────────
@@ -578,7 +608,19 @@ export default function DeployStrategy() {
 
   async function runBacktest(backtestStartDate) {
     setShowBtModal(false);
-    const config = { ...form, backtestStartDate };
+
+    // Full payload sent to /strategy/backtest
+    const config = {
+      universe:         form.universe,
+      numStocks:        Number(form.numStocks),
+      lookback1:        Number(form.lookback1),
+      lookback2:        Number(form.lookback2),
+      priceCap:         form.priceCap !== "" ? Number(form.priceCap) : null,
+      capital:          Number(form.capital),
+      rebalanceType:    form.rebalanceType,
+      rebalanceFreq:    Number(form.rebalanceFreq),
+      backtestStartDate,
+    };
 
     setBtLoading(true);
     setBtResult(null);
@@ -587,7 +629,7 @@ export default function DeployStrategy() {
 
     try {
       const result = await postJSON(`${BASE_URL}/strategy/backtest`, config);
-      setBtConfig(config);
+      setBtConfig({ ...config, numStocks: form.numStocks });
       setBtResult(result);
       setTimeout(() => setResultVisible(true), 80);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 220);
@@ -604,7 +646,8 @@ export default function DeployStrategy() {
 
   // ── DEPLOY ────────────────────────────────────────────────────────────────
   function handleDeployClick() {
-    const errs = validateForm(form);
+    // Deploy uses stricter validation (startingDate ≥ tomorrow)
+    const errs = validateDeploy(form);
     if (Object.keys(errs).length) { setErrors(errs); return; }
     setDepAlert(null);
     setShowDepModal(true);
@@ -614,7 +657,7 @@ export default function DeployStrategy() {
     setDepLoading(true);
     setDepAlert(null);
 
-    // Build request body exactly as backend expects
+    // Exact payload shape documented for POST /api/strategy/deploy
     const payload = {
       universe:      form.universe,
       numStocks:     Number(form.numStocks),
@@ -622,35 +665,36 @@ export default function DeployStrategy() {
       lookback2:     Number(form.lookback2),
       priceCap:      form.priceCap !== "" ? Number(form.priceCap) : null,
       capital:       Number(form.capital),
+      rebalanceType: form.rebalanceType,
       rebalanceFreq: Number(form.rebalanceFreq),
+      startingDate:  form.startingDate,
     };
 
     try {
-      // Endpoint matches backend: POST /api/strategy/deploy
+      // Success shape: { success: true, strategyId, status, nextRebalance }
       const data = await postJSON(`${BASE_URL}/api/strategy/deploy`, payload);
 
-      // Backend returns { success: true, strategy: { id, status, universe, numStocks,
-      //   capitalAllocated, rebalanceFreq, nextRebalance, deployedAt } }
       if (!data.success) {
-        // success:false but 2xx — treat as error
         throw new Error(data.message || "Deployment was unsuccessful.");
       }
 
-      const s = data.strategy; // full strategy object from backend
-      setDeployedStrategy(s);
+      // Store flat fields — backend has NO nested strategy object
+      setDeployedStrategy({
+        id:            data.strategyId,
+        status:        data.status,
+        nextRebalance: data.nextRebalance,
+      });
+
       setShowDepModal(false);
 
-      const nextDate = s.nextRebalance
-        ? new Date(s.nextRebalance).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
-        : "—";
-      const deployedAt = s.deployedAt
-        ? new Date(s.deployedAt).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
+      const nextDate = data.nextRebalance
+        ? new Date(data.nextRebalance).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
         : "—";
 
       setDepAlert({
         type: "success",
-        title: `Strategy Live · ID: ${s.id}`,
-        message: `Status: ${s.status?.toUpperCase()} · Capital: ${fmtRupee(s.capitalAllocated)} · Next rebalance: ${nextDate} · Deployed at: ${deployedAt}. Redirecting to dashboard…`,
+        title: `Strategy Live · ID: ${data.strategyId}`,
+        message: `Status: ${(data.status ?? "active").toUpperCase()} · Capital: ${fmtRupee(form.capital)} · Next rebalance: ${nextDate}. Redirecting to dashboard…`,
       });
 
       setTimeout(() => navigate("/dashboard"), 2500);
@@ -658,15 +702,25 @@ export default function DeployStrategy() {
     } catch (err) {
       setShowDepModal(false);
 
-      // Map known backend error messages to user-friendly text
-      let userMsg = err.message || "Could not deploy strategy. Please try again.";
-      if (userMsg === "Invalid input data")  userMsg = "Some inputs are invalid. Please review your configuration and try again.";
-      if (userMsg === "Server error")        userMsg = "The server encountered an error. Please try again in a moment.";
+      // Translate every known backend error to a clear user message
+      let msg = err.message || "Could not deploy strategy. Please try again.";
+      const lower = msg.toLowerCase();
+
+      if (lower.includes("connect broker") || lower.includes("no broker"))
+        msg = "Broker not connected. Please connect your broker account before deploying.";
+      else if (lower.includes("available") && lower.includes("balance"))
+        msg = msg; // already contains specific amounts — keep as-is e.g. "Available=499999.00, Requested=500000.00"
+      else if (lower.includes("unable to verify") || lower.includes("broker funds"))
+        msg = "Unable to verify broker funds right now. Please try again in a moment.";
+      else if (msg === "Invalid input data")
+        msg = "Some inputs are invalid. Please review your configuration and try again.";
+      else if (msg === "Server error")
+        msg = "The server encountered an error. Please try again in a moment.";
 
       setDepAlert({
         type: "error",
         title: "Deployment Failed",
-        message: userMsg,
+        message: msg,
       });
     } finally {
       setDepLoading(false);
@@ -715,7 +769,7 @@ export default function DeployStrategy() {
         .uni-desc { font-size: 10px; color: #888; }
 
         .rtoggle           { display: flex; border: 1.5px solid #e0e0e0; border-radius: 7px; overflow: hidden; background: #f5f5f5; margin-bottom: 14px; }
-        .rtbtn             { flex: 1; padding: 9px 12px; font-size: 12px; font-weight: 600; border: none; cursor: pointer; background: transparent; color: "#666"; text-transform: uppercase; letter-spacing: 0.04em; transition: all 0.14s; display: flex; align-items: center; justify-content: center; gap: 5px; }
+        .rtbtn             { flex: 1; padding: 9px 12px; font-size: 12px; font-weight: 600; border: none; cursor: pointer; background: transparent; color: #666; text-transform: uppercase; letter-spacing: 0.04em; transition: all 0.14s; display: flex; align-items: center; justify-content: center; gap: 5px; }
         .rtbtn:first-child { border-right: 1.5px solid #e0e0e0; }
         .rtbtn.on          { background: #1a1a1a; color: #fff; }
 
@@ -743,7 +797,6 @@ export default function DeployStrategy() {
         .fade-up { animation: fadeUp 0.22s ease; }
       `}</style>
 
-      {/* Modals */}
       {showBtModal && (
         <BacktestDateModal onConfirm={runBacktest} onCancel={() => setShowBtModal(false)} />
       )}
@@ -771,7 +824,6 @@ export default function DeployStrategy() {
             {/* ── LEFT: Form ── */}
             <div>
 
-              {/* Section 1: Universe */}
               <Section number="1" title="Stock Universe">
                 <Label hint="— pool of stocks the strategy selects from">Universe</Label>
                 <div className="g4" style={{ marginTop: 6 }}>
@@ -789,7 +841,6 @@ export default function DeployStrategy() {
                 <FieldError msg={errors.universe} />
               </Section>
 
-              {/* Section 2: Portfolio */}
               <Section number="2" title="Portfolio Parameters">
                 <div className="g2">
                   <div>
@@ -821,7 +872,6 @@ export default function DeployStrategy() {
                 </div>
               </Section>
 
-              {/* Section 3: Lookback */}
               <Section number="3" title="Lookback Periods">
                 <div className="g2">
                   <div>
@@ -850,7 +900,6 @@ export default function DeployStrategy() {
                 <Hint>Two different windows (e.g. <strong>6M + 12M</strong>) reduce signal noise and improve rank stability.</Hint>
               </Section>
 
-              {/* Section 4: Capital & Rebalancing */}
               <Section number="4" title="Capital & Rebalancing">
                 <div style={{ marginBottom: 16 }}>
                   <Label hint="— total amount to deploy">Capital</Label>
@@ -894,7 +943,7 @@ export default function DeployStrategy() {
                           type="date"
                           value={form.startingDate}
                           onChange={setField("startingDate")}
-                          min={TODAY}
+                          min={TOMORROW}
                           disabled={anyLoading}
                           style={{ width: "100%", border: "none", outline: "none", background: "transparent", fontSize: 13, color: "#111", padding: "9px 11px", cursor: anyLoading ? "not-allowed" : "pointer", fontFamily: SYS }}
                         />
@@ -909,7 +958,6 @@ export default function DeployStrategy() {
                 </div>
               </Section>
 
-              {/* Action buttons */}
               <div className="dp-btn-row">
                 <button className="dp-btn outline" onClick={handleBacktestClick} disabled={anyLoading}>
                   {btLoading ? <><span>Running</span><LoadingDots /></> : <><span>⟳</span> Backtest</>}
@@ -919,7 +967,6 @@ export default function DeployStrategy() {
                 </button>
               </div>
 
-              {/* Alert banners */}
               {btAlert && (
                 <AlertBanner
                   type={btAlert.type}
@@ -958,7 +1005,7 @@ export default function DeployStrategy() {
                 {[
                   ["Universe", "Larger universes offer more diversification but more diluted signals."],
                   ["Lookback",  "Combining 6M + 12M windows is a classic momentum setup."],
-                  ["Capital",   "Ensure capital covers at least 1 lot per stock in the portfolio."],
+                  ["Capital",   "Broker available balance must exactly match the capital you enter."],
                 ].map(([t, tip], i, arr) => (
                   <div key={t} style={{ marginBottom: i < arr.length - 1 ? 10 : 0, paddingBottom: i < arr.length - 1 ? 10 : 0, borderBottom: i < arr.length - 1 ? "1px solid #f4f4f4" : "none" }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: "#222", marginBottom: 2 }}>{t}</div>
@@ -966,6 +1013,25 @@ export default function DeployStrategy() {
                   </div>
                 ))}
               </div>
+
+              {/* Live strategy card — appears after successful deploy */}
+              {deployedStrategy && (
+                <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 10, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#166534", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>Live Strategy</div>
+                  {[
+                    ["ID",             deployedStrategy.id],
+                    ["Status",         (deployedStrategy.status ?? "active").toUpperCase()],
+                    ["Next Rebalance", deployedStrategy.nextRebalance
+                      ? new Date(deployedStrategy.nextRebalance).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                      : "—"],
+                  ].map(([k, v]) => (
+                    <div key={k} style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: 10, color: "#16a34a", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>{k}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#14532d", fontFamily: MONO, wordBreak: "break-all" }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
             </div>
           </div>
