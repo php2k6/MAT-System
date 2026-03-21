@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -26,12 +27,17 @@ from apscheduler.triggers.cron import CronTrigger
 
 from sqlalchemy import func
 
+from backend.config import settings
+from backend.core.live_prices import get_live_price_store
+from backend.core.security import decrypt_token
 from backend.database import SessionLocal
-from backend.models import RebalanceQueue, Strategy
+from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, StockTicker, Strategy
+from fyers_apiv3 import fyersModel
 logger = logging.getLogger(__name__)
 
 # ── Singleton scheduler instance ─────────────────────────────────────────────
 _scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
+_IST = ZoneInfo("Asia/Kolkata")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -41,6 +47,159 @@ def _advance_date(current: date, is_monthly: bool, freq: int) -> date:
     if is_monthly:
         return current + relativedelta(months=freq)
     return current + relativedelta(days=freq * 7)
+
+
+def _is_market_hours() -> bool:
+    now_ist = datetime.now(_IST)
+    if now_ist.weekday() >= 5:  # Saturday, Sunday
+        return False
+
+    minutes = now_ist.hour * 60 + now_ist.minute
+    market_open = 9 * 60 + 15
+    market_close = 15 * 60 + 30
+    return market_open <= minutes <= market_close
+
+
+def _iter_chunks(items: list[str], size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def _get_any_active_fyers(db):
+    session = (
+        db.query(BrokerSession)
+        .filter(BrokerSession.token_date == date.today())
+        .order_by(BrokerSession.created_at.desc())
+        .first()
+    )
+    if not session:
+        return None
+
+    token = decrypt_token(session.access_token_encrypted)
+    return fyersModel.FyersModel(
+        client_id=settings.fyers_app_id,
+        token=token,
+        is_async=False,
+        log_path="",
+    )
+
+
+def _extract_ticker(symbol: str) -> str:
+    # NSE:INFY-EQ -> INFY
+    if ":" in symbol:
+        symbol = symbol.split(":", 1)[1]
+    return symbol.replace("-EQ", "")
+
+
+def refresh_live_prices() -> None:
+    """
+    Pull latest prices for tracked tickers and store them in Redis cache.
+    Runs on interval during market hours.
+    """
+    if not _is_market_hours():
+        return
+
+    db = SessionLocal()
+    try:
+        tickers = [r.ticker for r in db.query(StockTicker.ticker).all()]
+        if not tickers:
+            return
+
+        fyers = _get_any_active_fyers(db)
+        if not fyers:
+            logger.debug("refresh_live_prices: no active broker session for today")
+            return
+
+        prices: dict[str, float] = {}
+        for chunk in _iter_chunks(tickers, 50):
+            symbols = ",".join(f"NSE:{t}-EQ" for t in chunk)
+            resp = fyers.quotes({"symbols": symbols, "ohlcv_flag": 1})
+            if resp.get("s") != "ok":
+                logger.warning("refresh_live_prices: quotes failed for chunk: %s", resp)
+                continue
+
+            for item in resp.get("d", []):
+                if item.get("s") != "ok":
+                    continue
+                ticker = _extract_ticker(item.get("n", ""))
+                v = item.get("v", {})
+                ltp = float(v.get("lp", v.get("ltp", 0)) or 0)
+                if ticker and ltp > 0:
+                    prices[ticker] = ltp
+
+        if prices:
+            get_live_price_store().set_prices(prices, source="fyers")
+            logger.info("refresh_live_prices: updated %d tickers", len(prices))
+    except Exception:
+        logger.exception("refresh_live_prices: unexpected error")
+    finally:
+        db.close()
+
+
+def eod_mark_to_market() -> None:
+    """
+    End-of-day valuation snapshot:
+    - refresh holdings.last_price from latest live cache (fallback existing)
+    - update strategy.market_value
+    - upsert portfolio value for today
+    """
+    db = SessionLocal()
+    today = date.today()
+    try:
+        strategies = (
+            db.query(Strategy)
+            .filter(Strategy.status.in_(["active", "paused"]))
+            .all()
+        )
+        if not strategies:
+            return
+
+        for strat in strategies:
+            holdings = (
+                db.query(Holdings)
+                .filter(Holdings.strat_id == strat.strat_id)
+                .all()
+            )
+            tickers = [h.ticker for h in holdings if (h.qty or 0) > 0]
+            live_map = get_live_price_store().get_prices(tickers)
+
+            equity = 0.0
+            for h in holdings:
+                qty = int(h.qty or 0)
+                if qty <= 0:
+                    continue
+
+                live = live_map.get(h.ticker)
+                if live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
+                    ltp = float(live["ltp"])
+                else:
+                    ltp = float(h.last_price or 0)
+
+                if ltp > 0:
+                    h.last_price = ltp
+                equity += qty * ltp
+
+            cash = float(strat.unused_capital or 0)
+            total_value = equity + cash
+            strat.market_value = total_value
+
+            row = (
+                db.query(Portfolio)
+                .filter(Portfolio.strat_id == strat.strat_id, Portfolio.date == today)
+                .first()
+            )
+            if row:
+                row.value = total_value
+            else:
+                db.add(Portfolio(strat_id=strat.strat_id, date=today, value=total_value))
+
+        db.commit()
+        logger.info("eod_mark_to_market: completed for %d strategies", len(strategies))
+    except Exception:
+        db.rollback()
+        logger.exception("eod_mark_to_market: unexpected error")
+    finally:
+        db.close()
 
 
 # ── Job 1 : Queue rebalances (09:00 IST) ─────────────────────────────────────
@@ -215,8 +374,33 @@ def start_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=3600,
     )
+    _scheduler.add_job(
+        refresh_live_prices,
+        trigger="interval",
+        seconds=max(5, int(settings.live_price_refresh_seconds)),
+        id="refresh_live_prices",
+        replace_existing=True,
+        misfire_grace_time=60,
+    )
+    _scheduler.add_job(
+        eod_mark_to_market,
+        trigger=CronTrigger(
+            hour=int(settings.eod_mtm_hour_ist),
+            minute=int(settings.eod_mtm_minute_ist),
+            timezone="Asia/Kolkata",
+            day_of_week="mon-fri",
+        ),
+        id="eod_mark_to_market",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
     _scheduler.start()
-    logger.info("Scheduler started — queue_rebalances@09:00 IST, drain_queue@12:00 IST")
+    logger.info(
+        "Scheduler started — queue@09:00, drain@12:00, live_prices@%ss, eod_mtm@%02d:%02d IST",
+        int(settings.live_price_refresh_seconds),
+        int(settings.eod_mtm_hour_ist),
+        int(settings.eod_mtm_minute_ist),
+    )
 
 
 def stop_scheduler() -> None:

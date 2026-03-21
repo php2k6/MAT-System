@@ -10,7 +10,7 @@ from backend.core.deps import get_current_user
 from backend.core.security import decrypt_token
 from backend.config import settings
 from backend.database import get_db
-from backend.models import BrokerSession, StockPrice, Strategy, User
+from backend.models import BrokerSession, RebalanceQueue, StockPrice, Strategy, User
 from backend.schemas.strategy import BacktestRequest, DeployStrategyRequest, StrategyActionRequest
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
@@ -206,3 +206,50 @@ def strategy_action(
     db.refresh(strategy)
 
     return {"success": True, "status": strategy.status}
+
+
+@router.get("/rebalance-history")
+def rebalance_history(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    strategy = (
+        db.query(Strategy)
+        .filter(Strategy.user_id == user.user_id)
+        .order_by(Strategy.start_date.desc())
+        .first()
+    )
+    if not strategy:
+        return {
+            "success": True,
+            "strategyDeployed": False,
+            "message": "No strategy deployed",
+            "history": [],
+        }
+
+    rows = (
+        db.query(RebalanceQueue)
+        .filter(RebalanceQueue.strat_id == strategy.strat_id)
+        .order_by(RebalanceQueue.queued_at.desc())
+        .all()
+    )
+
+    history = [
+        {
+            "id": str(r.id),
+            "status": r.status,
+            "reason": r.reason,
+            "retryCount": int(r.retry_count or 0),
+            "queuedAt": r.queued_at.isoformat() if r.queued_at else None,
+            "attemptedAt": r.attempted_at.isoformat() if r.attempted_at else None,
+            "completedAt": r.completed_at.isoformat() if r.completed_at else None,
+        }
+        for r in rows
+    ]
+
+    return {
+        "success": True,
+        "strategyDeployed": True,
+        "strategyId": str(strategy.strat_id),
+        "history": history,
+    }
