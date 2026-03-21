@@ -36,8 +36,8 @@ from fyers_apiv3 import fyersModel
 logger = logging.getLogger(__name__)
 
 # ── Singleton scheduler instance ─────────────────────────────────────────────
-_scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
-_IST = ZoneInfo("Asia/Kolkata")
+_scheduler = BackgroundScheduler(timezone=settings.scheduler_timezone)
+_IST = ZoneInfo(settings.scheduler_timezone)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -55,8 +55,8 @@ def _is_market_hours() -> bool:
         return False
 
     minutes = now_ist.hour * 60 + now_ist.minute
-    market_open = 9 * 60 + 15
-    market_close = 15 * 60 + 30
+    market_open = int(settings.market_open_hour_ist) * 60 + int(settings.market_open_minute_ist)
+    market_close = int(settings.market_close_hour_ist) * 60 + int(settings.market_close_minute_ist)
     return market_open <= minutes <= market_close
 
 
@@ -362,14 +362,22 @@ def drain_rebalance_queue() -> None:
 def start_scheduler() -> None:
     _scheduler.add_job(
         queue_rebalances,
-        trigger=CronTrigger(hour=9, minute=0, timezone="Asia/Kolkata"),
+        trigger=CronTrigger(
+            hour=int(settings.queue_rebalance_hour_ist),
+            minute=int(settings.queue_rebalance_minute_ist),
+            timezone=settings.scheduler_timezone,
+        ),
         id="queue_rebalances",
         replace_existing=True,
         misfire_grace_time=3600,    # run even if delayed up to 1 hour
     )
     _scheduler.add_job(
         drain_rebalance_queue,
-        trigger=CronTrigger(hour=12, minute=0, timezone="Asia/Kolkata"),
+        trigger=CronTrigger(
+            hour=int(settings.drain_rebalance_hour_ist),
+            minute=int(settings.drain_rebalance_minute_ist),
+            timezone=settings.scheduler_timezone,
+        ),
         id="drain_rebalance_queue",
         replace_existing=True,
         misfire_grace_time=3600,
@@ -387,7 +395,7 @@ def start_scheduler() -> None:
         trigger=CronTrigger(
             hour=int(settings.eod_mtm_hour_ist),
             minute=int(settings.eod_mtm_minute_ist),
-            timezone="Asia/Kolkata",
+            timezone=settings.scheduler_timezone,
             day_of_week="mon-fri",
         ),
         id="eod_mark_to_market",
@@ -396,10 +404,15 @@ def start_scheduler() -> None:
     )
     _scheduler.start()
     logger.info(
-        "Scheduler started — queue@09:00, drain@12:00, live_prices@%ss, eod_mtm@%02d:%02d IST",
+        "Scheduler started — queue@%02d:%02d, drain@%02d:%02d, live_prices@%ss, eod_mtm@%02d:%02d (%s)",
+        int(settings.queue_rebalance_hour_ist),
+        int(settings.queue_rebalance_minute_ist),
+        int(settings.drain_rebalance_hour_ist),
+        int(settings.drain_rebalance_minute_ist),
         int(settings.live_price_refresh_seconds),
         int(settings.eod_mtm_hour_ist),
         int(settings.eod_mtm_minute_ist),
+        settings.scheduler_timezone,
     )
 
 
