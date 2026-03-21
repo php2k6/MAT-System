@@ -10,6 +10,7 @@ import Footer from "./components/Footer.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import AppLayout from "./components/AppLayout.jsx";
 import History from "./pages/History.jsx";
+import Offline from "./pages/Offline.jsx";
 
 function Layout() {
   return (
@@ -41,6 +42,7 @@ function App() {
           {/* Routes WITHOUT Navbar */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/offline" element={<Offline />} />
 
         </Routes>
       </BrowserRouter>

@@ -553,7 +553,12 @@ function PriceSourceBadge({ source }) {
   );
 }
 
+// OfflineScreen lives at /offline (Offline.jsx) — Dashboard redirects there after retries.
+
 // ─── MAIN DASHBOARD ───────────────────────────────────────────────────────────
+const MAX_AUTO_RETRIES = 2;
+const RETRY_DELAY_MS   = 1000; // 3 s between auto-retries
+
 export default function Dashboard() {
   const navigate = useNavigate();
 
@@ -569,26 +574,86 @@ export default function Dashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error,         setError]         = useState(null);
 
+  // ── Offline / retry state ──
+  const [offline,       setOffline]       = useState(false);
+  const [retrying,      setRetrying]      = useState(false);
+  const [retryAttempt,  setRetryAttempt]  = useState(0);
+  const retryTimer = useRef(null);
+
   // ── Flash state for live-updated cards ──
   const [flashValue, setFlashValue] = useState(false);
 
-  // ── Fetch portfolio on mount ──
-  useEffect(() => {
-    api.getPortfolio()
-      .then(data => {
+  // ── Core fetch function ──
+  const fetchPortfolio = useCallback(async () => {
+    try {
+      const data = await api.getPortfolio();
+      // Success — clear offline state
+      setPortfolio(data);
+      setOffline(false);
+      setRetrying(false);
+      setRetryAttempt(0);
+      setLoading(false);
+      setTimeout(() => setMounted(true), 40);
+    } catch (err) {
+      if (err.message === "UNAUTHORIZED") {
+        navigate("/login");
+        return;
+      }
+      // Network / server error
+      setLoading(false);
+      setOffline(true);
+      setRetrying(false);
+    }
+  }, [navigate]);
+
+  // ── Auto-retry scheduler: fires up to MAX_AUTO_RETRIES times, then redirects ──
+  const scheduleAutoRetry = useCallback((attempt) => {
+    if (attempt >= MAX_AUTO_RETRIES) {
+      // All retries exhausted — redirect to offline/maintenance page
+      navigate("/offline");
+      return;
+    }
+    retryTimer.current = setTimeout(async () => {
+      const next = attempt + 1;
+      setRetryAttempt(next);
+      setRetrying(true);
+      try {
+        const data = await api.getPortfolio();
         setPortfolio(data);
+        setOffline(false);
+        setRetrying(false);
+        setRetryAttempt(0);
         setLoading(false);
         setTimeout(() => setMounted(true), 40);
-      })
-      .catch(err => {
-        if (err.message === "UNAUTHORIZED") {
-          navigate("/login");
-        } else {
-          setError("Failed to load portfolio. Please refresh.");
-          setLoading(false);
-        }
-      });
+      } catch (err) {
+        if (err.message === "UNAUTHORIZED") { navigate("/login"); return; }
+        setRetrying(false);
+        scheduleAutoRetry(next);
+      }
+    }, RETRY_DELAY_MS);
+  }, [navigate]);
+
+  // ── Initial fetch on mount ──
+  useEffect(() => {
+    fetchPortfolio().then(() => {}).catch(() => {});
+    return () => clearTimeout(retryTimer.current);
   }, []);
+
+  // ── When offline is set, kick off auto-retry sequence ──
+  useEffect(() => {
+    if (!offline) return;
+    scheduleAutoRetry(retryAttempt);
+    return () => clearTimeout(retryTimer.current);
+  }, [offline]);
+
+  // ── Manual retry — not used here (redirect happens after auto-retries) ──
+  // Kept as a ref in case child components need it in future.
+  const handleManualRetry = useCallback(() => {
+    clearTimeout(retryTimer.current);
+    setRetryAttempt(0);
+    setRetrying(true);
+    fetchPortfolio();
+  }, [fetchPortfolio]);
 
   // ── Fetch chart when panel opens or range changes ──
   useEffect(() => {
@@ -702,6 +767,18 @@ export default function Dashboard() {
 
   // ── Loading screen ──
   if (loading) return (
+    <div style={{
+      minHeight: "calc(100vh - 56px)", background: "#f2f2f2",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      <Spinner size={34} />
+    </div>
+  );
+
+  // Note: offline state triggers navigate("/offline") after MAX_AUTO_RETRIES — no local render needed.
+
+  // Guard: portfolio is null while auto-retries are in-flight (loading=false but no data yet)
+  if (!portfolio) return (
     <div style={{
       minHeight: "calc(100vh - 56px)", background: "#f2f2f2",
       display: "flex", alignItems: "center", justifyContent: "center",
