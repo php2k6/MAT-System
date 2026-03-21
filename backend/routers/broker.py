@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from uuid import UUID
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
@@ -7,12 +8,14 @@ from fyers_apiv3 import fyersModel
 from sqlalchemy.orm import Session
 
 from backend.core.deps import get_current_user
+from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import encrypt_token
 from backend.database import get_db
-from backend.models import BrokerSession, User, UserBrokerLink
+from backend.models import BrokerSession, StockTicker, User, UserBrokerLink
 from backend.config import settings
 
 router = APIRouter(prefix="/api/broker", tags=["broker"])
+logger = logging.getLogger(__name__)
 
 
 # ── POST /api/broker/connect ──────────────────────────────────────────────────
@@ -161,5 +164,15 @@ def broker_callback(
     except Exception:
         db.rollback()
         return RedirectResponse(f"{_err_redirect}?status=error&reason=db_error")
+
+    # Ensure backend market feed is running after successful broker connection.
+    try:
+        tickers = [r.ticker for r in db.query(StockTicker.ticker).all()]
+        started = get_market_feed_manager().ensure_running(access_token=access_token, symbols=tickers)
+        if started:
+            logger.info("broker_callback: started market feed websocket")
+    except Exception as exc:
+        # Keep callback success even if feed startup fails; scheduler polling remains fallback.
+        logger.warning("broker_callback: market feed startup failed: %s", exc)
 
     return RedirectResponse(f"{settings.frontend_origin}/dashboard?status=connected")

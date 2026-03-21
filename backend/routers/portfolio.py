@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from backend.core.live_prices import get_live_price_store
 from backend.core.deps import get_current_user
 from backend.database import get_db
 from backend.models import Holdings, Portfolio, RebalanceQueue, StockPrice, StockTicker, Strategy, User
@@ -86,14 +87,30 @@ def get_portfolio(
 
     holdings_payload = []
     invested_total = 0.0
+    live_equity = 0.0
+    used_live_price = False
+    store = get_live_price_store()
+    live_prices = store.get_prices([h.ticker for h in holding_rows]) if holding_rows else {}
+
     for h in holding_rows:
         qty = int(h.qty or 0)
         avg_price = _num(h.avg_price)
-        ltp = prices_by_ticker.get(h.ticker, {}).get("ltp", _num(h.last_price))
+        live = live_prices.get(h.ticker)
+        if live and not live.get("is_stale") and _num(live.get("ltp")) > 0:
+            ltp = _num(live.get("ltp"))
+            price_source = "live"
+            price_ts = int(live.get("ts") or 0)
+            used_live_price = True
+        else:
+            ltp = prices_by_ticker.get(h.ticker, {}).get("ltp", _num(h.last_price))
+            price_source = "snapshot"
+            price_ts = None
+
         value = qty * ltp
         cost = qty * avg_price
         pnl = value - cost
         pnl_pct = (pnl / cost * 100) if cost > 0 else 0.0
+        live_equity += value
 
         day_ret = prices_by_ticker.get(h.ticker, {}).get("daily_return", 0.0)
         day_change = day_ret * 100 if abs(day_ret) <= 1 else day_ret
@@ -110,11 +127,13 @@ def get_portfolio(
                 "pnl": round(pnl, 2),
                 "pnlPct": round(pnl_pct, 2),
                 "dayChange": round(day_change, 2),
+                "priceSource": price_source,
+                "priceTs": price_ts,
             }
         )
 
-    current_value = _num(strategy.market_value)
     cash = _num(strategy.unused_capital)
+    current_value = round(live_equity + cash, 2) if used_live_price else _num(strategy.market_value)
     pnl = current_value - invested_total
     pnl_pct = (pnl / invested_total * 100) if invested_total > 0 else 0.0
 
@@ -159,6 +178,7 @@ def get_portfolio(
             "pnl": round(pnl, 2),
             "pnlPct": round(pnl_pct, 2),
             "cash": round(cash, 2),
+            "priceSource": "live" if used_live_price else "snapshot",
         },
         "holdings": holdings_payload,
     }

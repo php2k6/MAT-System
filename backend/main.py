@@ -2,10 +2,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import strategies, portfolio, broker
+from backend.routers import strategies, portfolio, broker, live
 from backend.routers import auth
 from backend.database import init_db
 from backend.config import settings
+from backend.core.market_feed import get_market_feed_manager
 from backend.scheduler import start_scheduler, stop_scheduler
 
 app = FastAPI()
@@ -49,6 +50,7 @@ app.include_router(auth.router)
 app.include_router(broker.router)
 app.include_router(strategies.router)
 app.include_router(portfolio.router)
+app.include_router(live.router)
 
 
 @app.on_event("startup")
@@ -59,6 +61,7 @@ def on_startup():
 
 @app.on_event("shutdown")
 def on_shutdown():
+    get_market_feed_manager().stop()
     stop_scheduler()
 
 

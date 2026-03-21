@@ -25,7 +25,13 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from backend.routers import portfolio as portfolio_router
-from backend.routers.strategies import DeployStrategyRequest, StrategyActionRequest, deploy_strategy, strategy_action
+from backend.routers.strategies import (
+    DeployStrategyRequest,
+    StrategyActionRequest,
+    deploy_strategy,
+    rebalance_history,
+    strategy_action,
+)
 import unittest
 
 
@@ -263,6 +269,54 @@ class TestApiContract(TestCase):
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("exactly match deploy capital", ctx.exception.detail["message"])
+
+    def test_rebalance_history_no_strategy(self):
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=None),
+        ])
+
+        body = rebalance_history(db=fake_db, user=self.user)
+
+        self.assertTrue(body["success"])
+        self.assertFalse(body["strategyDeployed"])
+        self.assertEqual(body["history"], [])
+
+    def test_rebalance_history_returns_rows(self):
+        strat_id = uuid4()
+        strategy = SimpleNamespace(strat_id=strat_id)
+        rows = [
+            SimpleNamespace(
+                id=uuid4(),
+                status="done",
+                reason=None,
+                retry_count=0,
+                queued_at=datetime(2026, 3, 20, 9, 0, 0),
+                attempted_at=datetime(2026, 3, 20, 12, 0, 0),
+                completed_at=datetime(2026, 3, 20, 12, 1, 0),
+            ),
+            SimpleNamespace(
+                id=uuid4(),
+                status="skipped",
+                reason="LC_DETECTED",
+                retry_count=1,
+                queued_at=datetime(2026, 3, 13, 9, 0, 0),
+                attempted_at=datetime(2026, 3, 13, 12, 0, 0),
+                completed_at=None,
+            ),
+        ]
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=strategy),
+            _FakeQuery(all_result=rows),
+        ])
+
+        body = rebalance_history(db=fake_db, user=self.user)
+
+        self.assertTrue(body["success"])
+        self.assertTrue(body["strategyDeployed"])
+        self.assertEqual(body["strategyId"], str(strat_id))
+        self.assertEqual(len(body["history"]), 2)
+        self.assertEqual(body["history"][0]["status"], "done")
+        self.assertEqual(body["history"][1]["reason"], "LC_DETECTED")
 
 
 if __name__ == "__main__":

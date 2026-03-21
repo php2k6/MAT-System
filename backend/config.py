@@ -24,6 +24,16 @@ class Settings(BaseSettings):
     fyers_secret_key: str = ""
     fyers_redirect_uri: str = ""
 
+    # Redis / live-price cache
+    redis_url: str = ""
+    redis_price_ttl_seconds: int = 900
+    live_price_stale_after_seconds: int = 90
+    live_price_refresh_seconds: int = 15
+
+    # EOD mark-to-market scheduler
+    eod_mtm_hour_ist: int = 15
+    eod_mtm_minute_ist: int = 40
+
     class Config:
         env_file = str(_ENV_FILE)
 
