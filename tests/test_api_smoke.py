@@ -29,7 +29,10 @@ from backend.routers.strategies import (
     DeployStrategyRequest,
     StrategyActionRequest,
     deploy_strategy,
+    force_rebalance_now,
     rebalance_history,
+    trigger_eod_mtm,
+    trigger_live_price_refresh,
     strategy_action,
 )
 import unittest
@@ -81,6 +84,9 @@ class _FakeSession:
 
     def flush(self):
         self.flush_called = True
+
+    def rollback(self):
+        self.rollback_called = True
 
 
 class TestApiContract(TestCase):
@@ -317,6 +323,54 @@ class TestApiContract(TestCase):
         self.assertEqual(len(body["history"]), 2)
         self.assertEqual(body["history"][0]["status"], "done")
         self.assertEqual(body["history"][1]["reason"], "LC_DETECTED")
+
+    def test_force_rebalance_returns_done_status(self):
+        strategy = SimpleNamespace(strat_id=uuid4(), status="active")
+        in_progress = None
+        queue_entry = SimpleNamespace(
+            id=uuid4(),
+            status="in_progress",
+            reason=None,
+            retry_count=0,
+            completed_at=None,
+        )
+
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=strategy),
+            _FakeQuery(first_result=in_progress),
+        ])
+
+        fake_result = SimpleNamespace(success=True, skipped=False, reason="", details={})
+        fake_engine = SimpleNamespace(run_rebalance=lambda: fake_result)
+
+        # refresh(entry) should keep the same object reference in fake flow
+        def _refresh(obj):
+            fake_db.refresh_called = True
+
+        fake_db.refresh = _refresh
+
+        with patch("backend.routers.strategies.settings.enable_testing_endpoints", True), patch(
+            "backend.routers.strategies.RebalanceQueue", return_value=queue_entry
+        ), patch(
+            "backend.mat_engine.MATEngine", return_value=fake_engine
+        ):
+            body = force_rebalance_now(db=fake_db, user=self.user)
+
+        self.assertTrue(body["success"])
+        self.assertEqual(body["status"], "done")
+
+    def test_testing_triggers_return_success(self):
+        with patch("backend.routers.strategies.settings.enable_testing_endpoints", True), patch(
+            "backend.scheduler.refresh_live_prices", return_value=None
+        ):
+            a = trigger_live_price_refresh(user=self.user)
+        with patch("backend.routers.strategies.settings.enable_testing_endpoints", True), patch(
+            "backend.scheduler.eod_mark_to_market", return_value=None
+        ):
+            b = trigger_eod_mtm(user=self.user)
+
+        self.assertTrue(a["success"])
+        self.assertTrue(b["success"])
 
 
 if __name__ == "__main__":

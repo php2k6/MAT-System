@@ -30,6 +30,21 @@ class Settings(BaseSettings):
     live_price_stale_after_seconds: int = 90
     live_price_refresh_seconds: int = 15
 
+    # Operational flags
+    enable_scheduler: bool = True
+    enable_testing_endpoints: bool = False
+
+    # Scheduler timing controls
+    scheduler_timezone: str = "Asia/Kolkata"
+    queue_rebalance_hour_ist: int = 9
+    queue_rebalance_minute_ist: int = 0
+    drain_rebalance_hour_ist: int = 12
+    drain_rebalance_minute_ist: int = 0
+    market_open_hour_ist: int = 9
+    market_open_minute_ist: int = 15
+    market_close_hour_ist: int = 15
+    market_close_minute_ist: int = 30
+
     # EOD mark-to-market scheduler
     eod_mtm_hour_ist: int = 15
     eod_mtm_minute_ist: int = 40
