@@ -9,6 +9,7 @@ import DeployStrategy from "./pages/Deploystrategy.jsx";
 import Footer from "./components/Footer.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import AppLayout from "./components/AppLayout.jsx";
+import History from "./pages/History.jsx";
 
 function Layout() {
   return (
@@ -33,6 +34,7 @@ function App() {
               <Route path="/" element={<Home />} />
               <Route path="/dashboard" element={<Home />} />
               <Route path="/deploy" element={<DeployStrategy />} />
+              <Route path="/history" element={<History />} />
             </Route>
           </Route>  {/* ← this closing tag was missing */}
 
