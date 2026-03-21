@@ -56,13 +56,15 @@ app.include_router(live.router)
 @app.on_event("startup")
 def on_startup():
     init_db()
-    start_scheduler()
+    if settings.enable_scheduler:
+        start_scheduler()
 
 
 @app.on_event("shutdown")
 def on_shutdown():
     get_market_feed_manager().stop()
-    stop_scheduler()
+    if settings.enable_scheduler:
+        stop_scheduler()
 
 
 @app.get("/")

@@ -1,0 +1,5 @@
+# Fyers SDK/runtime log files
+fyersApi.log
+fyersRequests.log
+fyersDataSocket.log
+**/fyers*.log

@@ -1,4 +1,5 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+import json
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -43,6 +44,23 @@ def _get_available_balance(broker_session: BrokerSession) -> float:
             return float(item.get("equityAmount", item.get("val", 0)))
 
     return sum(float(i.get("equityAmount", i.get("val", 0))) for i in resp.get("fund_limit", []))
+
+
+def _latest_user_strategy(db: Session, user_id):
+    return (
+        db.query(Strategy)
+        .filter(Strategy.user_id == user_id)
+        .order_by(Strategy.start_date.desc())
+        .first()
+    )
+
+
+def _ensure_testing_enabled() -> None:
+    if not settings.enable_testing_endpoints:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"success": False, "message": "Testing endpoints are disabled"},
+        )
 
 
 @router.post("/backtest")
@@ -183,12 +201,7 @@ def strategy_action(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    strategy = (
-        db.query(Strategy)
-        .filter(Strategy.user_id == user.user_id)
-        .order_by(Strategy.start_date.desc())
-        .first()
-    )
+    strategy = _latest_user_strategy(db, user.user_id)
     if not strategy:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -213,12 +226,7 @@ def rebalance_history(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    strategy = (
-        db.query(Strategy)
-        .filter(Strategy.user_id == user.user_id)
-        .order_by(Strategy.start_date.desc())
-        .first()
-    )
+    strategy = _latest_user_strategy(db, user.user_id)
     if not strategy:
         return {
             "success": True,
@@ -252,4 +260,123 @@ def rebalance_history(
         "strategyDeployed": True,
         "strategyId": str(strategy.strat_id),
         "history": history,
+    }
+
+
+@router.post("/testing/force-rebalance")
+def force_rebalance_now(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Manual testing endpoint to execute rebalance immediately for the user's
+    latest strategy, without waiting for scheduler time windows.
+    """
+    _ensure_testing_enabled()
+    from backend.mat_engine import MATEngine
+
+    strategy = _latest_user_strategy(db, user.user_id)
+    if not strategy:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "message": "No strategy deployed"},
+        )
+
+    if strategy.status not in {"active", "paused"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"success": False, "message": "Strategy is not active/paused"},
+        )
+
+    existing = (
+        db.query(RebalanceQueue)
+        .filter(
+            RebalanceQueue.strat_id == strategy.strat_id,
+            RebalanceQueue.status.in_(["pending", "in_progress"]),
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"success": False, "message": "Rebalance already in progress for this strategy"},
+        )
+
+    now = datetime.now(timezone.utc)
+    entry = RebalanceQueue(
+        strat_id=strategy.strat_id,
+        user_id=user.user_id,
+        status="in_progress",
+        queued_at=now,
+        attempted_at=now,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+
+    try:
+        result = MATEngine(entry, db).run_rebalance()
+        if result.skipped:
+            entry.status = "skipped"
+            entry.reason = result.reason + (" | " + json.dumps(result.details) if result.details else "")
+            entry.retry_count = (entry.retry_count or 0) + 1
+        elif result.success:
+            entry.status = "done"
+            entry.completed_at = datetime.now(timezone.utc)
+        else:
+            entry.status = "failed"
+            entry.reason = result.reason
+
+        db.commit()
+        db.refresh(entry)
+    except Exception as exc:
+        db.rollback()
+        entry = db.query(RebalanceQueue).filter(RebalanceQueue.id == entry.id).first()
+        if entry:
+            entry.status = "failed"
+            entry.reason = str(exc)[:500]
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"success": False, "message": f"Force rebalance failed: {exc}"},
+        )
+
+    return {
+        "success": True,
+        "queueId": str(entry.id),
+        "strategyId": str(strategy.strat_id),
+        "status": entry.status,
+        "reason": entry.reason,
+    }
+
+
+@router.post("/testing/refresh-live-prices")
+def trigger_live_price_refresh(
+    user: User = Depends(get_current_user),
+):
+    _ensure_testing_enabled()
+    # user dependency keeps endpoint authenticated even though user object is unused.
+    from backend.scheduler import refresh_live_prices
+
+    _ = user
+    refresh_live_prices()
+    return {
+        "success": True,
+        "message": "Triggered live price refresh",
+    }
+
+
+@router.post("/testing/eod-mtm")
+def trigger_eod_mtm(
+    user: User = Depends(get_current_user),
+):
+    _ensure_testing_enabled()
+    # user dependency keeps endpoint authenticated even though user object is unused.
+    from backend.scheduler import eod_mark_to_market
+
+    _ = user
+    eod_mark_to_market()
+    return {
+        "success": True,
+        "message": "Triggered EOD mark-to-market",
     }
