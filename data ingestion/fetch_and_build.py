@@ -16,7 +16,7 @@ WHY MONDAY:
 
 WHAT THIS DOES:
   1. Reads symbol lists from 4 index CSVs → assigns index_member tag
-  2. Downloads 11 years of OHLCV (auto-adjusted for splits and bonuses)
+  2. Downloads data from START_DATE to latest OHLCV (auto-adjusted for splits and bonuses)
   3. Computes daily_return, log_return, volatility_1y in the same pass
   4. Saves the master CSV ready for the backtester
 
@@ -48,7 +48,7 @@ from pathlib import Path
 #  CONFIG — edit paths here if needed
 # ─────────────────────────────────────────────────────────────────
 OUTPUT_CSV        = "nifty250_log_return_volatility.csv"
-YEARS             = 11
+START_DATE        = "2015-01-01"   # fixed base date (YYYY-MM-DD)
 VOLATILITY_WINDOW = 252       # trading days for rolling volatility
 ANNUALISE_VOL     = False     # True → multiply std by √252
 API_DELAY         = 0.3       # seconds between Yahoo Finance calls
@@ -117,7 +117,7 @@ def fetch_ohlcv(symbol: str) -> pd.DataFrame | None:
     try:
         df = yf.download(
             f"{symbol}.NS",
-            period=f"{YEARS}y",
+            start=START_DATE,
             progress=False,
             auto_adjust=True,    # back-adjusts ALL history for splits/bonuses
             rounding=True
@@ -184,7 +184,7 @@ def main():
     symbols     = universe_df["symbol"].tolist()
 
     # ── 2. Fetch OHLCV ───────────────────────────────────────────
-    print(f"\n[2/3] Fetching {YEARS}y OHLCV for {len(symbols)} symbols "
+    print(f"\n[2/3] Fetching data from {START_DATE} for {len(symbols)} symbols "
           f"(auto-adjusted for splits & bonuses) …\n")
     all_data = []
     failed   = []
