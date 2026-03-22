@@ -12,6 +12,7 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL;
 async function postJSON(url, body) {
   const res = await fetch(url, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });

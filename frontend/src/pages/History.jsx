@@ -6,6 +6,7 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL;
 async function getJSON(url) {
   const res = await fetch(url, {
     method: "GET",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
   });
   const data = await res.json().catch(() => ({}));
