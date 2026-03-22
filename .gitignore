@@ -3,3 +3,7 @@ fyersApi.log
 fyersRequests.log
 fyersDataSocket.log
 **/fyers*.log
+
+# Backend runtime logs
+logs/
+**/backend.log

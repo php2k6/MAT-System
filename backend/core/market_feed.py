@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from fyers_apiv3.FyersWebsocket.data_ws import FyersDataSocket
 
+from backend.config import settings
 from backend.core.live_prices import get_live_price_store
 
 logger = logging.getLogger(__name__)
@@ -126,8 +128,10 @@ class MarketFeedManager:
                 except Exception:
                     pass
 
+            Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
             self._socket = FyersDataSocket(
                 access_token=access_token,
+                log_path=settings.log_dir,
                 litemode=True,
                 reconnect=True,
                 on_message=self._on_message,

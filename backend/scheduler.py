@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 
@@ -76,11 +77,12 @@ def _get_any_active_fyers(db):
         return None
 
     token = decrypt_token(session.access_token_encrypted)
+    Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
     return fyersModel.FyersModel(
         client_id=settings.fyers_app_id,
         token=token,
         is_async=False,
-        log_path="",
+        log_path=settings.log_dir,
     )
 
 

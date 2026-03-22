@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
@@ -10,6 +12,7 @@ from backend.core.deps import get_current_user
 from backend.config import settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 COOKIE_NAME  = "access_token"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days in seconds
@@ -18,6 +21,7 @@ COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days in seconds
 # ── GET /api/auth/me ──────────────────────────────────────────────────────────
 @router.get("/me")
 def get_me(current_user: User = Depends(get_current_user)):
+    logger.info("auth.me success user_id=%s", current_user.user_id)
     return {
         "success": True,
         "user": {
@@ -32,6 +36,7 @@ def get_me(current_user: User = Depends(get_current_user)):
 # ── POST /api/auth/logout ─────────────────────────────────────────────────────
 @router.post("/logout")
 def logout(response: Response):
+    logger.info("auth.logout")
     response.delete_cookie(COOKIE_NAME)
     return {"success": True, "message": "Logged out successfully"}
 
@@ -39,10 +44,12 @@ def logout(response: Response):
 # ── POST /api/auth/register ───────────────────────────────────────────────────
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
+    logger.info("auth.register attempt email=%s", body.email)
     try:
         # check duplicate email
         existing = db.query(User).filter(User.email == body.email).first()
         if existing:
+            logger.warning("auth.register duplicate email=%s", body.email)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"success": False, "message": "Email already registered"},
@@ -55,6 +62,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
         )
         db.add(user)
         db.commit()
+        logger.info("auth.register success email=%s", body.email)
 
         return {"success": True, "message": "Account created successfully"}
 
@@ -62,6 +70,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
         raise
     except Exception:
         db.rollback()
+        logger.exception("auth.register server error email=%s", body.email)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"success": False, "message": "Server error"},
@@ -71,10 +80,12 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 # ── POST /api/auth/login ──────────────────────────────────────────────────────
 @router.post("/login")
 def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+    logger.info("auth.login attempt email=%s", body.email)
     try:
         user = db.query(User).filter(User.email == body.email).first()
 
         if not user or not verify_password(body.password, user.password):
+            logger.warning("auth.login invalid credentials email=%s", body.email)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"success": False, "message": "Invalid email or password"},
@@ -99,6 +110,8 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
             secure=settings.cookie_secure,
         )
 
+        logger.info("auth.login success user_id=%s broker_connected=%s", user.user_id, broker_connected)
+
         return {
             "success": True,
             "user": {
@@ -112,6 +125,7 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
     except HTTPException:
         raise
     except Exception:
+        logger.exception("auth.login server error email=%s", body.email)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"success": False, "message": "Server error"},

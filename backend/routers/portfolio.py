@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
@@ -10,6 +11,7 @@ from backend.database import get_db
 from backend.models import Holdings, Portfolio, RebalanceQueue, StockPrice, StockTicker, Strategy, User
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
+logger = logging.getLogger(__name__)
 
 
 UNIVERSE_LABELS = {
@@ -47,8 +49,10 @@ def get_portfolio(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    logger.info("portfolio.get start user_id=%s", user.user_id)
     strategy = _pick_user_strategy(db, user.user_id)
     if not strategy:
+        logger.info("portfolio.get no_strategy user_id=%s", user.user_id)
         return {
             "strategyDeployed": False,
             "user": {"name": user.name},
@@ -84,6 +88,7 @@ def get_portfolio(
         .order_by(Holdings.ticker.asc())
         .all()
     )
+    logger.info("portfolio.get strategy=%s holdings=%d", strategy.strat_id, len(holding_rows))
 
     holdings_payload = []
     invested_total = 0.0
@@ -190,8 +195,10 @@ def get_portfolio_chart(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    logger.info("portfolio.chart start user_id=%s range=%s", user.user_id, range)
     strategy = _pick_user_strategy(db, user.user_id)
     if not strategy:
+        logger.info("portfolio.chart no_strategy user_id=%s", user.user_id)
         return []
 
     rows = (
@@ -201,6 +208,7 @@ def get_portfolio_chart(
         .all()
     )
     if not rows:
+        logger.info("portfolio.chart no_rows strat_id=%s", strategy.strat_id)
         return []
 
     latest_date = rows[-1].date
@@ -217,6 +225,7 @@ def get_portfolio_chart(
     }
 
     if selected_range not in days_map:
+        logger.warning("portfolio.chart invalid_range user_id=%s range=%s", user.user_id, selected_range)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
