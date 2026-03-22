@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     live_price_stale_after_seconds: int = 90
     live_price_refresh_seconds: int = 15
 
+    # Logging
+    log_level: str = "INFO"
+    log_dir: str = "logs"
+    log_file_name: str = "backend.log"
+    log_max_bytes: int = 5 * 1024 * 1024
+    log_backup_count: int = 5
+
     # Operational flags
     enable_scheduler: bool = True
     enable_testing_endpoints: bool = False

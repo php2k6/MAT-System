@@ -27,12 +27,14 @@ def connect_broker(current_user: User = Depends(get_current_user)):
     state = user_id so the callback endpoint knows which user authenticated.
     """
     if not settings.fyers_app_id or not settings.fyers_secret_key or not settings.fyers_redirect_uri:
+        logger.warning("broker.connect not_configured user_id=%s", current_user.user_id)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"success": False, "message": "Broker integration not configured"},
         )
 
     try:
+        logger.info("broker.connect start user_id=%s", current_user.user_id)
         session = fyersModel.SessionModel(
             client_id=settings.fyers_app_id,
             secret_key=settings.fyers_secret_key,
@@ -42,9 +44,11 @@ def connect_broker(current_user: User = Depends(get_current_user)):
             grant_type="authorization_code",
         )
         url = session.generate_authcode()
+        logger.info("broker.connect success user_id=%s", current_user.user_id)
         return {"success": True, "redirectUrl": url}
 
     except Exception:
+        logger.exception("broker.connect failed user_id=%s", current_user.user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"success": False, "message": "Failed to generate broker login URL"},
@@ -57,6 +61,7 @@ def broker_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    logger.info("broker.status start user_id=%s", current_user.user_id)
     """
     Returns whether the current user has a valid active broker session.
     If the token is from the previous day, attempts a silent refresh via
@@ -70,14 +75,17 @@ def broker_status(
     )
 
     if not session:
+        logger.info("broker.status no_session user_id=%s", current_user.user_id)
         return {"success": True, "brokerConnected": False, "reason": "NO_SESSION"}
 
     today = date.today()
 
     # Fyers tokens are valid for the current trading day only — no refresh supported
     if session.token_date == today:
+        logger.info("broker.status connected user_id=%s", current_user.user_id)
         return {"success": True, "brokerConnected": True}
 
+    logger.info("broker.status token_expired user_id=%s", current_user.user_id)
     return {"success": True, "brokerConnected": False, "reason": "TOKEN_EXPIRED"}
 
 
@@ -97,17 +105,20 @@ def broker_callback(
 
     # Fyers signals a failed login
     if s != "ok":
+        logger.warning("broker.callback auth_failed status=%s", s)
         return RedirectResponse(f"{_err_redirect}?status=error&reason=auth_failed")
 
     # Validate state is a valid UUID (user_id)
     try:
         user_id = UUID(state)
     except ValueError:
+        logger.warning("broker.callback invalid_state state=%s", state)
         return RedirectResponse(f"{_err_redirect}?status=error&reason=invalid_state")
 
     # Confirm user exists
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
+        logger.warning("broker.callback user_not_found user_id=%s", user_id)
         return RedirectResponse(f"{_err_redirect}?status=error&reason=user_not_found")
 
     # Exchange auth_code for tokens
@@ -122,14 +133,17 @@ def broker_callback(
         session.set_token(auth_code)
         response = session.generate_token()
     except Exception:
+        logger.exception("broker.callback fyers_unreachable user_id=%s", user_id)
         return RedirectResponse(f"{_err_redirect}?status=error&reason=fyers_unreachable")
 
     if response.get("s") != "ok":
+        logger.warning("broker.callback token_exchange_failed user_id=%s resp=%s", user_id, response)
         return RedirectResponse(f"{_err_redirect}?status=error&reason=token_exchange_failed")
 
     access_token  = response.get("access_token", "")
     refresh_token = response.get("refresh_token", "")
     if not access_token:
+        logger.warning("broker.callback token_missing user_id=%s", user_id)
         return RedirectResponse(f"{_err_redirect}?status=error&reason=token_missing")
     today         = date.today()
 
@@ -163,6 +177,7 @@ def broker_callback(
         db.commit()
     except Exception:
         db.rollback()
+        logger.exception("broker.callback db_error user_id=%s", user_id)
         return RedirectResponse(f"{_err_redirect}?status=error&reason=db_error")
 
     # Ensure backend market feed is running after successful broker connection.

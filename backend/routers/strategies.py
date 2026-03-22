@@ -1,5 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 import json
+import logging
+from pathlib import Path
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,6 +17,7 @@ from backend.models import BrokerSession, RebalanceQueue, StockPrice, Strategy, 
 from backend.schemas.strategy import BacktestRequest, DeployStrategyRequest, StrategyActionRequest
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
+logger = logging.getLogger(__name__)
 
 
 UNIVERSE_TO_INT = {
@@ -27,11 +30,12 @@ UNIVERSE_TO_INT = {
 
 def _get_available_balance(broker_session: BrokerSession) -> float:
     token = decrypt_token(broker_session.access_token_encrypted)
+    Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
     fyers = fyersModel.FyersModel(
         client_id=settings.fyers_app_id,
         token=token,
         is_async=False,
-        log_path="",
+        log_path=settings.log_dir,
     )
 
     resp = fyers.funds()
@@ -65,6 +69,7 @@ def _ensure_testing_enabled() -> None:
 
 @router.post("/backtest")
 def run_backtest_api(req: BacktestRequest, db: Session = Depends(get_db)):
+    logger.info("strategy.backtest start universe=%s capital=%s", req.universe, req.capital)
     # Pull required columns from stock_price; alias ticker → symbol
     rows = db.query(
         StockPrice.ticker,
@@ -75,6 +80,7 @@ def run_backtest_api(req: BacktestRequest, db: Session = Depends(get_db)):
     ).all()
 
     if not rows:
+        logger.warning("strategy.backtest no_stock_price_data")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"success": False, "message": "No stock price data in database"},
@@ -100,6 +106,7 @@ def run_backtest_api(req: BacktestRequest, db: Session = Depends(get_db)):
             starting_date=req.backtestStartDate,
         )
     except Exception as e:
+        logger.exception("strategy.backtest failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"success": False, "message": str(e)},
@@ -122,6 +129,7 @@ def deploy_strategy(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    logger.info("strategy.deploy start user_id=%s", user.user_id)
     broker_session = (
         db.query(BrokerSession)
         .filter(
@@ -132,6 +140,7 @@ def deploy_strategy(
         .first()
     )
     if not broker_session:
+        logger.warning("strategy.deploy missing_broker_session user_id=%s", user.user_id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"success": False, "message": "Connect broker before deploying strategy"},
@@ -140,6 +149,7 @@ def deploy_strategy(
     try:
         available_balance = _get_available_balance(broker_session)
     except Exception:
+        logger.exception("strategy.deploy funds_check_failed user_id=%s", user.user_id)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"success": False, "message": "Unable to verify broker funds at the moment"},
@@ -147,6 +157,12 @@ def deploy_strategy(
 
     capital = float(req.capital)
     if round(available_balance, 2) != round(capital, 2):
+        logger.warning(
+            "strategy.deploy funds_mismatch user_id=%s available=%.2f requested=%.2f",
+            user.user_id,
+            available_balance,
+            capital,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
@@ -186,6 +202,7 @@ def deploy_strategy(
 
     db.commit()
     db.refresh(strategy)
+    logger.info("strategy.deploy success user_id=%s strat_id=%s", user.user_id, strategy.strat_id)
 
     return {
         "success": True,
@@ -201,8 +218,10 @@ def strategy_action(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    logger.info("strategy.action start user_id=%s action=%s", user.user_id, req.action)
     strategy = _latest_user_strategy(db, user.user_id)
     if not strategy:
+        logger.warning("strategy.action no_strategy user_id=%s", user.user_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"success": False, "message": "No strategy deployed"},
@@ -217,6 +236,7 @@ def strategy_action(
     strategy.status = action_to_status[req.action]
     db.commit()
     db.refresh(strategy)
+    logger.info("strategy.action success user_id=%s status=%s", user.user_id, strategy.status)
 
     return {"success": True, "status": strategy.status}
 
@@ -226,8 +246,10 @@ def rebalance_history(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    logger.info("strategy.rebalance_history start user_id=%s", user.user_id)
     strategy = _latest_user_strategy(db, user.user_id)
     if not strategy:
+        logger.info("strategy.rebalance_history no_strategy user_id=%s", user.user_id)
         return {
             "success": True,
             "strategyDeployed": False,
@@ -241,6 +263,7 @@ def rebalance_history(
         .order_by(RebalanceQueue.queued_at.desc())
         .all()
     )
+    logger.info("strategy.rebalance_history rows=%d strat_id=%s", len(rows), strategy.strat_id)
 
     history = [
         {
@@ -275,14 +298,18 @@ def force_rebalance_now(
     _ensure_testing_enabled()
     from backend.mat_engine import MATEngine
 
+    logger.info("strategy.testing.force_rebalance start user_id=%s", user.user_id)
+
     strategy = _latest_user_strategy(db, user.user_id)
     if not strategy:
+        logger.warning("strategy.testing.force_rebalance no_strategy user_id=%s", user.user_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"success": False, "message": "No strategy deployed"},
         )
 
     if strategy.status not in {"active", "paused"}:
+        logger.warning("strategy.testing.force_rebalance invalid_status strat_id=%s status=%s", strategy.strat_id, strategy.status)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"success": False, "message": "Strategy is not active/paused"},
@@ -297,6 +324,7 @@ def force_rebalance_now(
         .first()
     )
     if existing:
+        logger.warning("strategy.testing.force_rebalance already_running strat_id=%s", strategy.strat_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"success": False, "message": "Rebalance already in progress for this strategy"},
@@ -329,6 +357,7 @@ def force_rebalance_now(
 
         db.commit()
         db.refresh(entry)
+        logger.info("strategy.testing.force_rebalance done queue_id=%s status=%s", entry.id, entry.status)
     except Exception as exc:
         db.rollback()
         entry = db.query(RebalanceQueue).filter(RebalanceQueue.id == entry.id).first()
@@ -336,6 +365,7 @@ def force_rebalance_now(
             entry.status = "failed"
             entry.reason = str(exc)[:500]
             db.commit()
+        logger.exception("strategy.testing.force_rebalance failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"success": False, "message": f"Force rebalance failed: {exc}"},
@@ -359,6 +389,7 @@ def trigger_live_price_refresh(
     from backend.scheduler import refresh_live_prices
 
     _ = user
+    logger.info("strategy.testing.refresh_live_prices trigger user_id=%s", user.user_id)
     refresh_live_prices()
     return {
         "success": True,
@@ -375,6 +406,7 @@ def trigger_eod_mtm(
     from backend.scheduler import eod_mark_to_market
 
     _ = user
+    logger.info("strategy.testing.eod_mtm trigger user_id=%s", user.user_id)
     eod_mark_to_market()
     return {
         "success": True,

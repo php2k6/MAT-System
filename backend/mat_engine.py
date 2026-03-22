@@ -41,6 +41,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
@@ -464,11 +465,12 @@ class MATEngine:
         if not session:
             raise RuntimeError("NO_BROKER_SESSION")
         token = decrypt_token(session.access_token_encrypted)
+        Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
         return fyersModel.FyersModel(
             client_id=settings.fyers_app_id,
             token=token,
             is_async=False,
-            log_path="",
+            log_path=settings.log_dir,
         )
 
     def _get_cash(self, fyers: fyersModel.FyersModel) -> float:
