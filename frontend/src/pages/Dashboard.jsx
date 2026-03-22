@@ -18,11 +18,11 @@ const MONO = `'Courier New', Courier, monospace`;
 // ─── API SERVICE LAYER ────────────────────────────────────────────────────────
 const api = {
   /**
-   * GET /api/portfolio
+   * GET /portfolio
    * Auth via session cookie (credentials: "include")
    */
   getPortfolio: async () => {
-    const res = await fetch(`${API_BASE_URL}/api/portfolio`, {
+    const res = await fetch(`${API_BASE_URL}/portfolio`, {
       method: "GET",
       credentials: "include",          // sends session cookie
     });
@@ -32,12 +32,12 @@ const api = {
   },
 
   /**
-   * GET /api/portfolio/chart?range=1M
+   * GET /portfolio/chart?range=1M
    * Auth via session cookie
    */
   getChartData: async (range = "1M") => {
     const res = await fetch(
-      `${API_BASE_URL}/api/portfolio/chart?range=${encodeURIComponent(range)}`,
+      `${API_BASE_URL}/portfolio/chart?range=${encodeURIComponent(range)}`,
       { method: "GET", credentials: "include" }
     );
     if (res.status === 401) throw new Error("UNAUTHORIZED");
@@ -50,12 +50,12 @@ const api = {
   },
 
   /**
-   * POST /api/strategy/action
+   * POST /strategy/action
    * Body: { action: "pause" | "stop" | "resume" | "restart" }
    * Adjust the path to match your actual backend endpoint.
    */
   postAction: async (action) => {
-    const res = await fetch(`${API_BASE_URL}/api/strategy/action`, {
+    const res = await fetch(`${API_BASE_URL}/strategy/action`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -69,7 +69,7 @@ const api = {
 
 // ─── WEBSOCKET HOOK ───────────────────────────────────────────────────────────
 /**
- * Connects to /api/live/ws via WebSocket.
+ * Connects to /live/ws via WebSocket.
  * Session cookie is sent automatically (same-origin or cookie-forwarding).
  *
  * Handles:
@@ -93,7 +93,7 @@ function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauth
     if (wsRef.current && wsRef.current.readyState < 2) return; // already open/connecting
 
     setWsStatus("connecting");
-    const ws = new WebSocket(`${WS_BASE_URL}/api/live/ws`);
+    const ws = new WebSocket(`${WS_BASE_URL}/live/ws`);
     wsRef.current = ws;
 
     ws.onopen = () => {

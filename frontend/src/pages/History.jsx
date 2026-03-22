@@ -493,7 +493,7 @@ export default function History() {
     setLoading(true);
     setError(null);
     try {
-      const res = await getJSON(`${BASE_URL}/api/strategy/rebalance-history`);
+      const res = await getJSON(`${BASE_URL}/strategy/rebalance-history`);
       setData(res);
     } catch (err) {
       setError(err.message || "Failed to load rebalance history.");

@@ -657,7 +657,7 @@ export default function DeployStrategy() {
     setDepLoading(true);
     setDepAlert(null);
 
-    // Exact payload shape documented for POST /api/strategy/deploy
+    // Exact payload shape documented for POST /strategy/deploy
     const payload = {
       universe:      form.universe,
       numStocks:     Number(form.numStocks),
@@ -672,7 +672,7 @@ export default function DeployStrategy() {
 
     try {
       // Success shape: { success: true, strategyId, status, nextRebalance }
-      const data = await postJSON(`${BASE_URL}/api/strategy/deploy`, payload);
+      const data = await postJSON(`${BASE_URL}/strategy/deploy`, payload);
 
       if (!data.success) {
         throw new Error(data.message || "Deployment was unsuccessful.");
