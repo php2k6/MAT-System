@@ -24,7 +24,6 @@ class BacktestRequest(BaseModel):
     rebalanceType: str = Field(..., pattern="^(monthly|weekly)$")
     rebalanceFreq: int = Field(..., ge=1, le=52)
     backtestStartDate: str
-    startingDate: str
 
     @field_validator("lookback1", "lookback2", "numStocks", "rebalanceFreq", mode="before")
     @classmethod
