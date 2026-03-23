@@ -4,15 +4,46 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 
+from backend.config import settings
+from backend.core.deps import get_current_user
 from backend.core.live_prices import get_live_price_store
+from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decode_access_token
 from backend.database import SessionLocal
 from backend.models import Holdings, Strategy, User
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 logger = logging.getLogger(__name__)
+
+
+def _ensure_testing_enabled() -> None:
+    if not settings.enable_testing_endpoints:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+@router.get("/testing/feed-status")
+def testing_feed_status(current_user: User = Depends(get_current_user)):
+    _ensure_testing_enabled()
+
+    manager = get_market_feed_manager()
+    feed = manager.get_debug_snapshot()
+    sample_symbols = feed.get("subscribedSample") or []
+    sample_prices = get_live_price_store().get_prices(sample_symbols)
+
+    logger.info(
+        "live.testing.feed_status user_id=%s connected=%s subscribed=%s",
+        current_user.user_id,
+        feed.get("connected"),
+        feed.get("subscribedCount"),
+    )
+
+    return {
+        "success": True,
+        "feed": feed,
+        "samplePrices": sample_prices,
+    }
 
 
 async def _resolve_user(websocket: WebSocket) -> User | None:

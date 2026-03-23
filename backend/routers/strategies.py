@@ -390,10 +390,11 @@ def trigger_live_price_refresh(
 
     _ = user
     logger.info("strategy.testing.refresh_live_prices trigger user_id=%s", user.user_id)
-    refresh_live_prices()
+    result = refresh_live_prices()
     return {
         "success": True,
         "message": "Triggered live price refresh",
+        "result": result,
     }
 
 

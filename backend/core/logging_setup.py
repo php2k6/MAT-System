@@ -71,6 +71,9 @@ def configure_logging() -> None:
         logger.handlers.clear()
         logger.propagate = True
 
+    # APScheduler executor emits noisy per-run INFO lines; keep warnings/errors only.
+    logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
+
     root._mat_logging_configured = True  # type: ignore[attr-defined]
     logging.getLogger(__name__).info(
         "Logging configured level=%s file=%s", level_name, str(log_file)
