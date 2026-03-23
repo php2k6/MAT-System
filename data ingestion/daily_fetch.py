@@ -244,48 +244,43 @@ def recompute_tail(stock_df: pd.DataFrame,
                    window: int,
                    annualise: bool) -> pd.DataFrame:
     """
-    Recompute indicators only for the tail of one symbol's history.
-    Used for normal incremental updates (no split detected).
-
-    BUG FIX [2]: A seed row (the last close from head_df) is prepended
-    to context_df before calling pct_change(). Without this, row 0 of
-    context_df has no prior close visible, so daily_return and
-    log_return are always NaN at the seam. The seed row is dropped
-    from the output before the final concat.
+    Recompute indicators for recent rows only, with enough lookback context.
+    Prevents overwriting older valid volatility values with rolling NaNs.
     """
-    stock_df = stock_df.sort_values("date").reset_index(drop=True)
-    n        = len(stock_df)
+    out = stock_df.sort_values("date").reset_index(drop=True).copy()
+    n = len(out)
+    if n == 0:
+        return out
 
-    recompute_len = window + 5
-    context_start = max(0, n - recompute_len - window)
+    for col in ["daily_return", "log_return", "volatility_1y"]:
+        if col not in out.columns:
+            out[col] = np.nan
 
-    head_df    = stock_df.iloc[:context_start].copy()
-    context_df = stock_df.iloc[context_start:].copy()
+    tail_rows = window + 5
+    recompute_start = max(0, n - tail_rows)
+    calc_start = max(0, recompute_start - window)
 
-    # Prepend seed row so pct_change() at row 0 of context is correct
-    if not head_df.empty:
-        seed       = head_df.iloc[[-1]][["date", "close"]].copy()
-        context_df = pd.concat([seed, context_df], ignore_index=True)
+    calc_df = out.iloc[calc_start:].copy()
 
-    context_df["daily_return"] = context_df["close"].pct_change()
-    context_df["log_return"]   = np.log(
-        context_df["close"] / context_df["close"].shift(1)
-    )
-    rolling_std = (
-        context_df["log_return"]
-        .rolling(window=window, min_periods=window)
-        .std()
-    )
-    context_df["volatility_1y"] = (
-        rolling_std * (np.sqrt(252) if annualise else 1.0)
-    )
+    if calc_start > 0:
+        seed = out.iloc[[calc_start - 1]][["date", "close"]].copy()
+        calc_df = pd.concat([seed, calc_df], ignore_index=True)
 
-    # Drop the seed row — it belongs to head_df, not the tail
-    if not head_df.empty:
-        context_df = context_df[context_df["date"] > head_df["date"].iloc[-1]]
-        return pd.concat([head_df, context_df], ignore_index=True)
-    else:
-        return context_df
+    calc_df["daily_return"] = calc_df["close"].pct_change()
+    calc_df["log_return"] = np.log(calc_df["close"] / calc_df["close"].shift(1))
+    rolling_std = calc_df["log_return"].rolling(window=window, min_periods=window).std()
+    calc_df["volatility_1y"] = rolling_std * (np.sqrt(252) if annualise else 1.0)
+
+    if calc_start > 0:
+        calc_df = calc_df.iloc[1:].reset_index(drop=True)
+
+    patch_offset = recompute_start - calc_start
+    patch = calc_df.iloc[patch_offset:].reset_index(drop=True)
+
+    out.loc[recompute_start:, ["daily_return", "log_return", "volatility_1y"]] = \
+        patch[["daily_return", "log_return", "volatility_1y"]].to_numpy()
+
+    return out
 
 
 def main():
