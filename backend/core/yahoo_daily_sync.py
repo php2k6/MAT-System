@@ -366,7 +366,9 @@ def run_yahoo_daily_sync(db: Session) -> dict[str, Any]:
     summary = {"up_to_date": 0, "incremental": 0, "full_refetch": 0, "no_data": 0, "failed": 0}
     details: list[dict[str, Any]] = []
 
-    for symbol in symbols:
+    logger.info("yahoo_sync starting symbol_count=%d target_date=%s", len(symbols), ref_last.date().isoformat())
+
+    for idx, symbol in enumerate(symbols, start=1):
         try:
             result = _sync_symbol(db, symbol, ref_last)
             summary[result.mode] = summary.get(result.mode, 0) + 1
@@ -387,6 +389,12 @@ def run_yahoo_daily_sync(db: Session) -> dict[str, Any]:
             logger.exception("yahoo_sync symbol_failed symbol=%s", symbol)
 
         time.sleep(max(0.0, float(settings.yahoo_api_delay_seconds)))
+
+        # Log progress every 25 symbols
+        if idx % 25 == 0:
+            logger.info("yahoo_sync progress processed=%d/%d up_to_date=%d incremental=%d full_refetch=%d no_data=%d failed=%d",
+                       idx, len(symbols), summary["up_to_date"], summary["incremental"], 
+                       summary["full_refetch"], summary["no_data"], summary["failed"])
 
     out = {
         "success": True,
