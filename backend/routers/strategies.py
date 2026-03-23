@@ -413,3 +413,22 @@ def trigger_eod_mtm(
         "success": True,
         "message": "Triggered EOD mark-to-market",
     }
+
+
+@router.post("/testing/yahoo-daily-sync")
+def trigger_yahoo_daily_sync(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    _ensure_testing_enabled()
+    # user dependency keeps endpoint authenticated even though user object is unused.
+    from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
+
+    _ = user
+    logger.info("strategy.testing.yahoo_daily_sync trigger user_id=%s", user.user_id)
+    result = run_yahoo_daily_sync(db)
+    return {
+        "success": True,
+        "message": "Triggered Yahoo daily DB sync",
+        "result": result,
+    }

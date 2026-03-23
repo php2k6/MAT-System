@@ -1,17 +1,13 @@
 """
 scheduler.py
 ────────────
-Two APScheduler jobs that run daily on IST:
+APScheduler jobs on IST:
 
-  Job 1 — queue_rebalances()      09:00 IST (pre-market)
-    • Checks every active strategy for next_rebalance_date == today
-    • Inserts a "pending" row into rebalance_queue
-    • Advances next_rebalance_date by rebalance_freq months or weeks
-
-  Job 2 — drain_rebalance_queue() 12:00 IST (mid-market)
-    • Picks up all "pending" rows from rebalance_queue
-    • Calls MATEngine.run_rebalance() for each
-    • Updates status/reason on success, skip, or failure
+    1) queue_rebalances()       pre-market
+    2) drain_rebalance_queue()  mid-market
+    3) refresh_live_prices()    interval fallback (only when websocket is not connected)
+    4) eod_mark_to_market()     end-of-day valuation snapshot
+    5) yahoo_daily_sync_job()   optional post-market Yahoo-to-DB stock_price sync
 """
 
 from __future__ import annotations
@@ -32,6 +28,7 @@ from backend.config import settings
 from backend.core.live_prices import get_live_price_store
 from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decrypt_token
+from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
 from backend.database import SessionLocal
 from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, StockTicker, Strategy
 from fyers_apiv3 import fyersModel
@@ -212,6 +209,23 @@ def eod_mark_to_market() -> None:
     except Exception:
         db.rollback()
         logger.exception("eod_mark_to_market: unexpected error")
+    finally:
+        db.close()
+
+
+def yahoo_daily_sync_job() -> None:
+    db = SessionLocal()
+    try:
+        result = run_yahoo_daily_sync(db)
+        logger.info(
+            "yahoo_daily_sync_job: status=%s processed=%s summary=%s",
+            result.get("status"),
+            result.get("symbolsProcessed"),
+            result.get("summary"),
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("yahoo_daily_sync_job: unexpected error")
     finally:
         db.close()
 
@@ -416,9 +430,22 @@ def start_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=3600,
     )
+    if settings.enable_yahoo_daily_sync:
+        _scheduler.add_job(
+            yahoo_daily_sync_job,
+            trigger=CronTrigger(
+                hour=int(settings.yahoo_daily_sync_hour_ist),
+                minute=int(settings.yahoo_daily_sync_minute_ist),
+                timezone=settings.scheduler_timezone,
+                day_of_week="mon-fri",
+            ),
+            id="yahoo_daily_sync",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
     _scheduler.start()
     logger.info(
-        "Scheduler started — queue@%02d:%02d, drain@%02d:%02d, live_prices@%ss, eod_mtm@%02d:%02d (%s)",
+        "Scheduler started — queue@%02d:%02d, drain@%02d:%02d, live_prices@%ss, eod_mtm@%02d:%02d, yahoo_sync=%s@%02d:%02d (%s)",
         int(settings.queue_rebalance_hour_ist),
         int(settings.queue_rebalance_minute_ist),
         int(settings.drain_rebalance_hour_ist),
@@ -426,6 +453,9 @@ def start_scheduler() -> None:
         int(settings.live_price_refresh_seconds),
         int(settings.eod_mtm_hour_ist),
         int(settings.eod_mtm_minute_ist),
+        bool(settings.enable_yahoo_daily_sync),
+        int(settings.yahoo_daily_sync_hour_ist),
+        int(settings.yahoo_daily_sync_minute_ist),
         settings.scheduler_timezone,
     )
 
