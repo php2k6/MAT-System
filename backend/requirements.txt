@@ -68,4 +68,5 @@ urllib3==2.6.3
 uvicorn==0.41.0
 websocket-client==1.6.1
 wrapt==2.1.2
+yfinance==0.2.54
 yarl==1.23.0
