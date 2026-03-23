@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import date
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -8,10 +9,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from backend.routers import strategies, portfolio, broker, live
 from backend.routers import auth
-from backend.database import init_db
+from backend.database import SessionLocal, init_db
 from backend.config import settings
 from backend.core.logging_setup import clear_request_id, configure_logging, set_request_id
+from backend.core.security import decrypt_token
 from backend.core.market_feed import get_market_feed_manager
+from backend.models import BrokerSession, StockTicker
 from backend.scheduler import start_scheduler, stop_scheduler
 
 configure_logging()
@@ -100,10 +103,42 @@ app.include_router(portfolio.router)
 app.include_router(live.router)
 
 
+def _restore_market_feed_on_startup() -> None:
+    db = SessionLocal()
+    try:
+        session = (
+            db.query(BrokerSession)
+            .filter(BrokerSession.token_date == date.today())
+            .order_by(BrokerSession.created_at.desc())
+            .first()
+        )
+        if not session:
+            logger.info("startup market_feed skipped reason=no_active_broker_session")
+            return
+
+        tickers = [row.ticker for row in db.query(StockTicker.ticker).all()]
+        if not tickers:
+            logger.info("startup market_feed skipped reason=no_tickers")
+            return
+
+        token = decrypt_token(session.access_token_encrypted)
+        started = get_market_feed_manager().ensure_running(access_token=token, symbols=tickers)
+        logger.info(
+            "startup market_feed ensured started_now=%s symbols=%d",
+            started,
+            len(tickers),
+        )
+    except Exception:
+        logger.exception("startup market_feed restore failed")
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def on_startup():
     logger.info("startup begin")
     init_db()
+    _restore_market_feed_on_startup()
     if settings.enable_scheduler:
         start_scheduler()
     logger.info("startup done scheduler_enabled=%s", settings.enable_scheduler)

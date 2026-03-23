@@ -30,6 +30,7 @@ from sqlalchemy import func
 
 from backend.config import settings
 from backend.core.live_prices import get_live_price_store
+from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decrypt_token
 from backend.database import SessionLocal
 from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, StockTicker, Strategy
@@ -93,24 +94,30 @@ def _extract_ticker(symbol: str) -> str:
     return symbol.replace("-EQ", "")
 
 
-def refresh_live_prices() -> None:
+def refresh_live_prices() -> dict:
     """
     Pull latest prices for tracked tickers and store them in Redis cache.
     Runs on interval during market hours.
     """
     if not _is_market_hours():
-        return
+        logger.info("refresh_live_prices: skipped (outside market hours)")
+        return {"status": "skipped", "reason": "outside_market_hours", "updated": 0}
+
+    # Save Fyers quote API budget when websocket feed is already live.
+    if get_market_feed_manager().is_connected():
+        logger.info("refresh_live_prices: skipped (market websocket connected)")
+        return {"status": "skipped", "reason": "websocket_connected", "updated": 0}
 
     db = SessionLocal()
     try:
         tickers = [r.ticker for r in db.query(StockTicker.ticker).all()]
         if not tickers:
-            return
+            return {"status": "skipped", "reason": "no_tickers", "updated": 0}
 
         fyers = _get_any_active_fyers(db)
         if not fyers:
             logger.debug("refresh_live_prices: no active broker session for today")
-            return
+            return {"status": "skipped", "reason": "no_active_broker_session", "updated": 0}
 
         prices: dict[str, float] = {}
         for chunk in _iter_chunks(tickers, 50):
@@ -130,10 +137,15 @@ def refresh_live_prices() -> None:
                     prices[ticker] = ltp
 
         if prices:
-            get_live_price_store().set_prices(prices, source="fyers")
+            get_live_price_store().set_prices(prices, source="fyers-pull")
             logger.info("refresh_live_prices: updated %d tickers", len(prices))
+            return {"status": "updated", "reason": "pull_success", "updated": len(prices)}
+
+        logger.info("refresh_live_prices: completed with no fresh prices")
+        return {"status": "skipped", "reason": "no_prices", "updated": 0}
     except Exception:
         logger.exception("refresh_live_prices: unexpected error")
+        return {"status": "error", "reason": "unexpected_error", "updated": 0}
     finally:
         db.close()
 

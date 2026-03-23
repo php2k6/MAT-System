@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -79,26 +80,48 @@ class MarketFeedManager:
         self._socket: FyersDataSocket | None = None
         self._running = False
         self._subscribed: set[str] = set()
+        self._last_message_ts_ms: int | None = None
+        self._last_message_price_count: int = 0
+        self._total_messages: int = 0
+        self._total_price_updates: int = 0
+        self._last_message_preview: str = ""
+        self._last_error: str = ""
+        self._last_close: str = ""
+        self._last_connect_ts_ms: int | None = None
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
 
     def _on_message(self, message: Any) -> None:
         try:
             prices = _extract_prices(message)
+            with self._lock:
+                self._total_messages += 1
+                self._last_message_ts_ms = self._now_ms()
+                self._last_message_price_count = len(prices)
+                self._total_price_updates += len(prices)
+                self._last_message_preview = str(message)[:500]
             if prices:
                 get_live_price_store().set_prices(prices, source="fyers-ws")
         except Exception:
             logger.exception("MarketFeedManager: on_message error")
 
     def _on_error(self, message: Any) -> None:
+        with self._lock:
+            self._last_error = str(message)[:300]
         logger.warning("MarketFeedManager: socket error: %s", message)
 
     def _on_close(self, message: Any) -> None:
         logger.warning("MarketFeedManager: socket closed: %s", message)
         with self._lock:
             self._running = False
+            self._last_close = str(message)[:300]
 
     def _on_connect(self) -> None:
         logger.info("MarketFeedManager: socket connected")
         with self._lock:
+            self._last_connect_ts_ms = self._now_ms()
             symbols = sorted(self._subscribed)
             socket = self._socket
 
@@ -149,6 +172,47 @@ class MarketFeedManager:
                 self._running = False
             logger.exception("MarketFeedManager: failed to start socket")
             raise
+
+    def is_connected(self) -> bool:
+        with self._lock:
+            socket = self._socket
+            running = self._running
+
+        if not running or not socket:
+            return False
+
+        try:
+            return bool(socket.is_connected())
+        except Exception:
+            return False
+
+    def get_debug_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            subscribed = sorted(self._subscribed)
+            running = self._running
+            last_message_ts_ms = self._last_message_ts_ms
+            last_message_price_count = self._last_message_price_count
+            total_messages = self._total_messages
+            total_price_updates = self._total_price_updates
+            last_message_preview = self._last_message_preview
+            last_error = self._last_error
+            last_close = self._last_close
+            last_connect_ts_ms = self._last_connect_ts_ms
+
+        return {
+            "running": running,
+            "connected": self.is_connected(),
+            "subscribedCount": len(subscribed),
+            "subscribedSample": subscribed[:25],
+            "lastConnectTsMs": last_connect_ts_ms,
+            "lastMessageTsMs": last_message_ts_ms,
+            "lastMessagePriceCount": last_message_price_count,
+            "totalMessages": total_messages,
+            "totalPriceUpdates": total_price_updates,
+            "lastMessagePreview": last_message_preview,
+            "lastError": last_error,
+            "lastClose": last_close,
+        }
 
     def stop(self) -> None:
         with self._lock:
