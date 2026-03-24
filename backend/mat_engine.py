@@ -456,13 +456,19 @@ class MATEngine:
                         "last_price": buy_price,
                     }
 
+        # Refresh broker cash after buy placements/fills so strategy cash is
+        # not over-reported (prevents equity+cash double counting).
+        try:
+            final_cash = self._get_cash(fyers)
+        except RuntimeError as e:
+            return RebalanceResult(success=False, reason=f"POST_BUY_FUNDS_FAILED:{e}")
+
         # Compute final portfolio value (use LTP from quotes or prev_close)
         def _ltp(ticker: str) -> float:
             q = all_quotes.get(ticker)
             return q["ltp"] if q else prev_close.get(ticker, 0)
 
         final_equity = sum(v["qty"] * _ltp(t) for t, v in new_holdings.items())
-        final_cash   = actual_cash  # best estimate; fractional residual stays as cash
         final_total  = final_cash + final_equity
 
         # ── Flush DB changes (committed by scheduler) ─────────────────────────
