@@ -14,7 +14,7 @@ from backend.core.security import decrypt_token
 from backend.config import settings
 from backend.database import get_db
 from backend.models import BrokerSession, RebalanceQueue, StockPrice, Strategy, User
-from backend.mat_engine import CASH_BUFFER, MATEngine, _sell_cost
+from backend.mat_engine import CASH_BUFFER, MATEngine, _buy_cost, _sell_cost
 from backend.schemas.strategy import BacktestRequest, DeployStrategyRequest, StrategyActionRequest
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
@@ -682,6 +682,7 @@ def mock_rebalance_preview(
 
     buy_orders = []
     uc_buy_skipped = []
+    remaining_buy_cash = buy_budget
     for ticker in target_tickers:
         diff = int(greedy_qty.get(ticker, 0) - current_qty.get(ticker, 0))
         if diff <= 0:
@@ -690,14 +691,39 @@ def mock_rebalance_preview(
         if q and engine._is_uc(q):
             uc_buy_skipped.append(ticker)
             continue
-        ltp = float(quotes.get(ticker, {}).get("ltp", prev_close.get(ticker, 0)) or 0)
+
+        est_price = max(
+            float(quotes.get(ticker, {}).get("ltp", 0) or 0),
+            float(prev_close.get(ticker, 0) or 0),
+        )
+        if est_price <= 0:
+            continue
+
+        # Cash-drag aware cap for market-buy simulation.
+        factor = 1 + 0.0 + 0.0000325 + 0.00015 + 0.000001 + 0.001
+        max_affordable = int(remaining_buy_cash / (est_price * factor))
+        capped_qty = min(diff, max_affordable)
+        if capped_qty <= 0:
+            continue
+
+        est_gross = capped_qty * est_price
+        est_charges = _buy_cost(est_gross)
+        est_outflow = est_gross + est_charges
+        if est_outflow > remaining_buy_cash:
+            continue
+
+        remaining_buy_cash -= est_outflow
+
         buy_orders.append(
             {
                 "symbol": ticker,
                 "side": "BUY",
-                "qty": diff,
-                "ltp": round(ltp, 4),
-                "estimatedValue": round(diff * ltp, 2),
+                "qty": capped_qty,
+                "ltp": round(est_price, 4),
+                "estimatedValue": round(est_gross, 2),
+                "estimatedCharges": round(est_charges, 2),
+                "estimatedOutflow": round(est_outflow, 2),
+                "cappedByCash": capped_qty < diff,
                 "reason": "NEW" if int(db_holdings.get(ticker, {}).get("qty") or 0) == 0 else "TOP_UP",
             }
         )
@@ -738,6 +764,7 @@ def mock_rebalance_preview(
             "workingCapital": round(working_capital, 2),
             "estimatedPostSellCash": round(estimated_post_sell_cash, 2),
             "estimatedBuyBudget": round(buy_budget, 2),
+            "estimatedBuyBudgetRemaining": round(remaining_buy_cash, 2),
         },
         "checks": {
             "ucCandidatesSkipped": uc_candidates,
