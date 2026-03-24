@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fyers_apiv3 import fyersModel
 
 from backend.config import settings
 from backend.core.deps import get_current_user
 from backend.core.live_prices import get_live_price_store
 from backend.core.market_feed import get_market_feed_manager
-from backend.core.security import decode_access_token
+from backend.core.security import decode_access_token, decrypt_token
 from backend.database import SessionLocal
-from backend.models import Holdings, Strategy, User
+from backend.models import BrokerSession, Holdings, Strategy, User
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 logger = logging.getLogger(__name__)
@@ -73,6 +76,89 @@ def _pick_strategy_for_user(db, user_id):
         .first()
     )
     return deployed
+
+
+def _extract_available_cash(funds_resp: dict) -> float | None:
+    if funds_resp.get("s") != "ok":
+        return None
+    limits = funds_resp.get("fund_limit", []) or []
+    for item in limits:
+        title = str(item.get("title", ""))
+        if "Available Balance" in title or "available_balance" in title.lower():
+            return float(item.get("equityAmount", item.get("val", 0)) or 0)
+    if limits:
+        return sum(float(i.get("equityAmount", i.get("val", 0)) or 0) for i in limits)
+    return None
+
+
+def _extract_positions_snapshot(positions_resp: dict) -> tuple[float, float, float] | None:
+    if positions_resp.get("s") != "ok":
+        return None
+    rows = positions_resp.get("netPositions") or positions_resp.get("overall") or []
+
+    invested = 0.0
+    current_value = 0.0
+    pnl = 0.0
+    for row in rows:
+        qty = abs(int(row.get("netQty", row.get("qty", 0)) or 0))
+        if qty <= 0:
+            continue
+        avg = float(row.get("netAvg", row.get("avgPrice", row.get("buyAvg", 0))) or 0)
+        ltp = float(row.get("ltp", 0) or 0)
+        market_val = float(row.get("marketVal", 0) or 0)
+        pl = float(row.get("pl", row.get("pnl", 0)) or 0)
+
+        pos_invested = qty * avg if avg > 0 else 0.0
+        pos_current = market_val if market_val > 0 else (qty * ltp if ltp > 0 else pos_invested)
+        invested += pos_invested
+        current_value += pos_current
+        pnl += pl if pl != 0 else (pos_current - pos_invested)
+
+    return invested, current_value, pnl
+
+
+def _fetch_fyers_summary_for_user(db, user_id):
+    try:
+        session = (
+            db.query(BrokerSession)
+            .filter(
+                BrokerSession.user_id == user_id,
+                BrokerSession.token_date == date.today(),
+            )
+            .order_by(BrokerSession.created_at.desc())
+            .first()
+        )
+        if not session:
+            return None
+
+        token = decrypt_token(session.access_token_encrypted)
+        Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
+        fyers = fyersModel.FyersModel(
+            client_id=settings.fyers_app_id,
+            token=token,
+            is_async=False,
+            log_path=settings.log_dir,
+        )
+
+        funds = _extract_available_cash(fyers.funds())
+        positions = _extract_positions_snapshot(fyers.positions())
+        if funds is None or positions is None:
+            return None
+        invested, positions_value, pnl = positions
+        current_value = funds + positions_value
+        pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
+
+        return {
+            "invested": invested,
+            "cash": funds,
+            "equity": positions_value,
+            "currentValue": current_value,
+            "pnl": pnl,
+            "pnlPct": pnl_pct,
+        }
+    except Exception:
+        logger.debug("live.ws fyers_summary_unavailable user_id=%s", user_id, exc_info=True)
+        return None
 
 
 @router.websocket("/ws")
@@ -141,13 +227,25 @@ async def live_ws(websocket: WebSocket):
                         }
                     )
 
-                cash = float(strategy.unused_capital or 0)
-                total_value = equity + cash
-                if last_summary_value is None or abs(total_value - last_summary_value) >= 0.01:
-                    last_summary_value = total_value
+                fyers_summary = _fetch_fyers_summary_for_user(db, user.user_id)
+                if fyers_summary:
+                    invested = float(fyers_summary["invested"])
+                    cash = float(fyers_summary["cash"])
+                    equity_summary = float(fyers_summary["equity"])
+                    total_value = float(fyers_summary["currentValue"])
+                    pnl = float(fyers_summary["pnl"])
+                    pnl_pct = float(fyers_summary["pnlPct"])
+                else:
+                    # Fallback when broker snapshot is unavailable.
+                    cash = float(strategy.unused_capital or 0)
+                    total_value = equity + cash
                     invested = float(strategy.capital or 0)
                     pnl = total_value - invested
                     pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
+                    equity_summary = equity
+
+                if last_summary_value is None or abs(total_value - last_summary_value) >= 0.01:
+                    last_summary_value = total_value
                     logger.debug("live.ws summary_update user_id=%s value=%.2f", user.user_id, total_value)
                     await websocket.send_json(
                         {
@@ -157,7 +255,7 @@ async def live_ws(websocket: WebSocket):
                                 "invested": round(invested, 2),
                                 "currentValue": round(total_value, 2),
                                 "cash": round(cash, 2),
-                                "equity": round(equity, 2),
+                                "equity": round(equity_summary, 2),
                                 "pnl": round(pnl, 2),
                                 "pnlPct": round(pnl_pct, 2),
                             },
