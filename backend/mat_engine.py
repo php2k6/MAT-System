@@ -364,6 +364,7 @@ class MATEngine:
         # Build buy list: greedy_qty[t] - current_qty[t] (positive diff only)
         buy_order_map: dict[str, str] = {}    # ticker → order_id
         buy_order_qty: dict[str, int] = {}    # ticker → qty attempted
+        remaining_buy_cash = buy_budget
 
         for t in target_tickers:
             diff = greedy_qty.get(t, 0) - current_qty.get(t, 0)
@@ -374,11 +375,38 @@ class MATEngine:
             if q and self._is_uc(q):
                 logger.info("MATEngine: BUY skipped — %s still UC at buy time", t)
                 continue
-            buy_order_qty[t] = diff
+
+            # Cash-drag aware sizing for market orders:
+            # cap desired qty by estimated gross + buy-side charges.
+            est_price = max(
+                float(all_quotes.get(t, {}).get("ltp", 0) or 0),
+                float(prev_close.get(t, 0) or 0),
+            )
+            if est_price <= 0:
+                logger.info("MATEngine: BUY skipped — %s has no usable price", t)
+                continue
+
+            max_affordable = _max_shares(remaining_buy_cash, est_price)
+            if max_affordable <= 0:
+                logger.info("MATEngine: BUY skipped — insufficient cash for %s", t)
+                continue
+
+            capped_qty = min(diff, max_affordable)
+            if capped_qty <= 0:
+                continue
+
+            est_gross = capped_qty * est_price
+            est_outflow = est_gross + _buy_cost(est_gross)
+            if est_outflow > remaining_buy_cash:
+                logger.info("MATEngine: BUY skipped — outflow exceeds remaining cash for %s", t)
+                continue
+
+            remaining_buy_cash -= est_outflow
+            buy_order_qty[t] = capped_qty
             try:
-                oid = self._place_order(fyers, t, side=1, qty=diff)
+                oid = self._place_order(fyers, t, side=1, qty=capped_qty)
                 buy_order_map[t] = oid
-                logger.info("MATEngine: BUY placed %s qty=%d oid=%s", t, diff, oid)
+                logger.info("MATEngine: BUY placed %s qty=%d oid=%s", t, capped_qty, oid)
             except Exception as e:
                 # Non-fatal: log and skip; continue with remaining buys
                 logger.error("MATEngine: buy placement failed for %s: %s", t, e)
