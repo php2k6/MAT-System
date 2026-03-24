@@ -873,6 +873,10 @@ export default function Dashboard() {
   const { user, summary, holdings, strategyDeployed, strategy } = portfolio;
   const pnlPos = (summary?.pnl ?? 0) >= 0;
 
+  // Deployment-based comparison values
+  const initialCapital = Number(strategy?.capital ?? 0);
+  const currentValueForSnapshot = Number(summary?.currentValue ?? 0);
+
   // ─── [NEW] Day-zero detection ─────────────────────────────────────────────
   // True when strategy is deployed but no trades have happened yet.
   const isDayZero = strategyDeployed && (holdings?.length === 0) && (summary?.invested === 0);
@@ -990,6 +994,14 @@ export default function Dashboard() {
             <>
               {strategy && (
                 <StrategyPanel strategy={strategy} onAction={setConfirmAction} />
+              )}
+
+              {/* New panel between deployed strategy and summary */}
+              {strategy && (
+                <DeploymentSnapshot
+                  initialCapital={initialCapital}
+                  currentValue={currentValueForSnapshot}
+                />
               )}
 
               {/* ── [NEW] Day-zero banner — shown only before first rebalance ── */}
@@ -1193,5 +1205,67 @@ export default function Dashboard() {
         </div>
       </div>
     </>
+  );
+}
+
+// ─── DEPLOYMENT SNAPSHOT PANEL ───────────────────────────────────────────────
+function DeploymentSnapshot({ initialCapital, currentValue }) {
+  const pnl = Number(currentValue ?? 0) - Number(initialCapital ?? 0);
+  const pnlPct = Number(initialCapital) > 0 ? (pnl / Number(initialCapital)) * 100 : 0;
+  const isPos = pnl >= 0;
+
+  const itemStyle = {
+    background: "#fff",
+    border: "1px solid #e7e7e7",
+    borderRadius: 8,
+    padding: "14px 16px",
+  };
+
+  return (
+    <div className="db-panel" style={{ marginBottom: 20 }}>
+      <div className="db-panel-header">
+        <span className="db-panel-title">Deployment vs Current</span>
+      </div>
+
+      <div style={{ padding: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 10 }}>
+          <div style={itemStyle}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#999", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8, fontFamily: SYS }}>
+              Initial Capital
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#111", fontFamily: MONO }}>
+              {fmtCompact(initialCapital)}
+            </div>
+            <div style={{ fontSize: 11, color: "#999", fontFamily: MONO, marginTop: 4 }}>
+              {fmt(initialCapital)}
+            </div>
+          </div>
+
+          <div style={itemStyle}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#999", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8, fontFamily: SYS }}>
+              Current Value
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#111", fontFamily: MONO }}>
+              {fmtCompact(currentValue)}
+            </div>
+            <div style={{ fontSize: 11, color: "#999", fontFamily: MONO, marginTop: 4 }}>
+              {fmt(currentValue)}
+            </div>
+          </div>
+
+          <div style={itemStyle}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#999", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8, fontFamily: SYS }}>
+              P&L
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: isPos ? "#1b6f3e" : "#c62828", fontFamily: MONO }}>
+              {isPos ? "+" : ""}{fmtCompact(pnl)}
+            </div>
+            <div style={{ fontSize: 11, fontFamily: MONO, marginTop: 4, color: isPos ? "#1b6f3e" : "#c62828" }}>
+              {isPos ? "▲" : "▼"} {Math.abs(pnlPct).toFixed(2)}%
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
