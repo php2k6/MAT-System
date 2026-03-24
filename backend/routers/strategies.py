@@ -582,28 +582,42 @@ def mock_rebalance_preview(
             "simulatedOrders": {"sell": [], "buy": []},
         }
 
-    alloc_pre = working_capital / len(target_tickers)
-    target_set = set(target_tickers)
+    # Build target quantities from working capital so target portfolio notionals
+    # are aligned with reported workingCapital.
+    alloc_target = working_capital / len(target_tickers)
+    target_qty = {}
+    for ticker in target_tickers:
+        close = float(prev_close.get(ticker, 0) or 0)
+        target_qty[ticker] = int(alloc_target / close) if close > 0 else 0
 
-    sells_exit = {}
-    sells_trim = {}
-    for ticker, held in db_holdings.items():
-        held_qty = int(held.get("qty") or 0)
-        if held_qty <= 0:
-            continue
-        if ticker not in target_set:
-            sells_exit[ticker] = held_qty
-        else:
-            pre_target_qty = int(alloc_pre / float(prev_close.get(ticker, 0) or 1))
-            if held_qty > pre_target_qty:
-                trim_qty = held_qty - pre_target_qty
-                if trim_qty > 0:
-                    sells_trim[ticker] = trim_qty
-
-    lc_tickers = [
-        t for t in (list(sells_exit) + list(sells_trim))
-        if engine._is_lc(quotes.get(t, {}))
+    target_base_cost = sum(
+        target_qty[t] * float(prev_close[t])
+        for t in target_tickers
+        if float(prev_close.get(t, 0) or 0) > 0
+    )
+    target_residual = working_capital - target_base_cost
+    target_remainders = [
+        (t, alloc_target - target_qty[t] * float(prev_close[t]))
+        for t in target_tickers
+        if float(prev_close.get(t, 0) or 0) > 0
     ]
+    target_remainders.sort(key=lambda x: x[1], reverse=True)
+    for ticker, _ in target_remainders:
+        close = float(prev_close[ticker])
+        if target_residual >= close:
+            target_qty[ticker] += 1
+            target_residual -= close
+
+    current_qty = {t: int(v.get("qty") or 0) for t, v in db_holdings.items()}
+
+    # Sells come directly from final target deltas (current > target).
+    sell_plan = {}
+    for ticker, held in current_qty.items():
+        plan_target = int(target_qty.get(ticker, 0))
+        if held > plan_target:
+            sell_plan[ticker] = held - plan_target
+
+    lc_tickers = [t for t in sell_plan if engine._is_lc(quotes.get(t, {}))]
     if lc_tickers:
         return {
             "success": True,
@@ -628,13 +642,16 @@ def mock_rebalance_preview(
 
     sell_orders = []
     estimated_sell_net = 0.0
-    for ticker in list(sells_exit) + list(sells_trim):
-        qty = int(sells_exit.get(ticker) or sells_trim.get(ticker) or 0)
+    for ticker, qty_raw in sell_plan.items():
+        qty = int(qty_raw or 0)
+        if qty <= 0:
+            continue
         ltp = float(quotes.get(ticker, {}).get("ltp", prev_close.get(ticker, 0)) or 0)
         gross = qty * ltp
         est_cost = _sell_cost(gross)
         est_net = max(0.0, gross - est_cost)
         estimated_sell_net += est_net
+        plan_target = int(target_qty.get(ticker, 0))
         sell_orders.append(
             {
                 "symbol": ticker,
@@ -644,47 +661,17 @@ def mock_rebalance_preview(
                 "grossValue": round(gross, 2),
                 "estimatedCharges": round(est_cost, 2),
                 "estimatedNet": round(est_net, 2),
-                "reason": "EXIT" if ticker in sells_exit else "TRIM",
+                "reason": "EXIT" if plan_target <= 0 else "TRIM",
             }
         )
 
-    current_qty = {t: int(v.get("qty") or 0) for t, v in db_holdings.items()}
-    for ticker, qty in sells_exit.items():
-        current_qty[ticker] = max(0, current_qty.get(ticker, 0) - int(qty))
-    for ticker, qty in sells_trim.items():
-        current_qty[ticker] = max(0, current_qty.get(ticker, 0) - int(qty))
-
     estimated_post_sell_cash = cash + estimated_sell_net
     buy_budget = estimated_post_sell_cash * (1 - CASH_BUFFER)
-    alloc_post = buy_budget / len(target_tickers)
-
-    base_qty = {}
-    for ticker in target_tickers:
-        close = float(prev_close.get(ticker, 0) or 0)
-        base_qty[ticker] = int(alloc_post / close) if close > 0 else 0
-
-    base_cost = sum(base_qty[t] * float(prev_close[t]) for t in target_tickers if float(prev_close.get(t, 0) or 0) > 0)
-    residual = buy_budget - base_cost
-
-    remainders = [
-        (t, alloc_post - base_qty[t] * float(prev_close[t]))
-        for t in target_tickers
-        if float(prev_close.get(t, 0) or 0) > 0
-    ]
-    remainders.sort(key=lambda x: x[1], reverse=True)
-
-    greedy_qty = dict(base_qty)
-    for ticker, _ in remainders:
-        close = float(prev_close[ticker])
-        if residual >= close:
-            greedy_qty[ticker] += 1
-            residual -= close
-
     buy_orders = []
     uc_buy_skipped = []
     remaining_buy_cash = buy_budget
     for ticker in target_tickers:
-        diff = int(greedy_qty.get(ticker, 0) - current_qty.get(ticker, 0))
+        diff = int(target_qty.get(ticker, 0) - current_qty.get(ticker, 0))
         if diff <= 0:
             continue
         q = quotes.get(ticker)
@@ -737,8 +724,8 @@ def mock_rebalance_preview(
                 "prevClose": round(float(prev_close.get(ticker, 0.0)), 4),
                 "ltp": round(float(quotes.get(ticker, {}).get("ltp", 0.0)), 4),
                 "currentQty": int(db_holdings.get(ticker, {}).get("qty") or 0),
-                "targetQty": int(greedy_qty.get(ticker, 0)),
-                "deltaQty": int(greedy_qty.get(ticker, 0) - int(db_holdings.get(ticker, {}).get("qty") or 0)),
+                "targetQty": int(target_qty.get(ticker, 0)),
+                "deltaQty": int(target_qty.get(ticker, 0) - int(db_holdings.get(ticker, {}).get("qty") or 0)),
                 "isUC": bool(engine._is_uc(quotes.get(ticker, {}))),
             }
         )
