@@ -63,21 +63,16 @@ async def _resolve_user(websocket: WebSocket) -> User | None:
 
 
 def _pick_strategy_for_user(db, user_id):
-    active = (
+    deployed = (
         db.query(Strategy)
-        .filter(Strategy.user_id == user_id, Strategy.status == "active")
-        .order_by(Strategy.start_date.desc())
+        .filter(
+            Strategy.user_id == user_id,
+            Strategy.status.in_(["active", "paused"]),
+        )
+        .order_by(Strategy.start_date.desc(), Strategy.next_rebalance_date.desc())
         .first()
     )
-    if active:
-        return active
-
-    return (
-        db.query(Strategy)
-        .filter(Strategy.user_id == user_id)
-        .order_by(Strategy.start_date.desc())
-        .first()
-    )
+    return deployed
 
 
 @router.websocket("/ws")
@@ -150,15 +145,21 @@ async def live_ws(websocket: WebSocket):
                 total_value = equity + cash
                 if last_summary_value is None or abs(total_value - last_summary_value) >= 0.01:
                     last_summary_value = total_value
+                    invested = float(strategy.capital or 0)
+                    pnl = total_value - invested
+                    pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
                     logger.debug("live.ws summary_update user_id=%s value=%.2f", user.user_id, total_value)
                     await websocket.send_json(
                         {
                             "type": "summary_update",
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "summary": {
+                                "invested": round(invested, 2),
                                 "currentValue": round(total_value, 2),
                                 "cash": round(cash, 2),
                                 "equity": round(equity, 2),
+                                "pnl": round(pnl, 2),
+                                "pnlPct": round(pnl_pct, 2),
                             },
                         }
                     )

@@ -14,6 +14,7 @@ from backend.core.security import decrypt_token
 from backend.config import settings
 from backend.database import get_db
 from backend.models import BrokerSession, RebalanceQueue, StockPrice, Strategy, User
+from backend.mat_engine import CASH_BUFFER, MATEngine, _sell_cost
 from backend.schemas.strategy import BacktestRequest, DeployStrategyRequest, StrategyActionRequest
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
@@ -54,7 +55,19 @@ def _latest_user_strategy(db: Session, user_id):
     return (
         db.query(Strategy)
         .filter(Strategy.user_id == user_id)
-        .order_by(Strategy.start_date.desc())
+        .order_by(Strategy.start_date.desc(), Strategy.next_rebalance_date.desc())
+        .first()
+    )
+
+
+def _deployed_user_strategy(db: Session, user_id):
+    return (
+        db.query(Strategy)
+        .filter(
+            Strategy.user_id == user_id,
+            Strategy.status.in_(["active", "paused"]),
+        )
+        .order_by(Strategy.start_date.desc(), Strategy.next_rebalance_date.desc())
         .first()
     )
 
@@ -171,15 +184,24 @@ def deploy_strategy(
             },
         )
 
-    # Ensure one live strategy per user. Keep history, but stop any existing live one.
+    # Enforce one deployed strategy per user.
     existing_live = (
         db.query(Strategy)
-        .filter(Strategy.user_id == user.user_id)
-        .all()
+        .filter(
+            Strategy.user_id == user.user_id,
+            Strategy.status.in_(["active", "paused"]),
+        )
+        .first()
     )
-    for existing in existing_live:
-        if existing.status in {"active", "paused"}:
-            existing.status = "stopped"
+    if existing_live:
+        logger.warning("strategy.deploy already_deployed user_id=%s strat_id=%s", user.user_id, existing_live.strat_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "success": False,
+                "message": "A strategy is already deployed. Stop it before deploying a new one.",
+            },
+        )
 
     strategy = Strategy(
         user_id=user.user_id,
@@ -219,22 +241,32 @@ def strategy_action(
     user: User = Depends(get_current_user),
 ):
     logger.info("strategy.action start user_id=%s action=%s", user.user_id, req.action)
-    strategy = _latest_user_strategy(db, user.user_id)
+    strategy = _deployed_user_strategy(db, user.user_id)
     if not strategy:
         logger.warning("strategy.action no_strategy user_id=%s", user.user_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"success": False, "message": "No strategy deployed"},
+            detail={"success": False, "message": "No deployed strategy found"},
         )
 
-    action_to_status = {
-        "pause": "paused",
-        "resume": "active",
-        "stop": "stopped",
-        "restart": "active",
-    }
-    strategy.status = action_to_status[req.action]
+    if req.action == "pause":
+        strategy.status = "paused"
+        # Ensure pause takes effect immediately by clearing unprocessed queue rows.
+        db.query(RebalanceQueue).filter(
+            RebalanceQueue.strat_id == strategy.strat_id,
+            RebalanceQueue.status == "pending",
+        ).delete(synchronize_session=False)
+    elif req.action in {"resume", "restart"}:
+        strategy.status = "active"
+    elif req.action == "stop":
+        # Hard delete strategy and children (holdings, portfolio, queue rows) via ORM cascades.
+        db.delete(strategy)
+
     db.commit()
+    if req.action == "stop":
+        logger.info("strategy.action success user_id=%s action=stop strategy_deleted=true", user.user_id)
+        return {"success": True, "status": "stopped", "strategyDeleted": True}
+
     db.refresh(strategy)
     logger.info("strategy.action success user_id=%s status=%s", user.user_id, strategy.status)
 
@@ -247,7 +279,7 @@ def rebalance_history(
     user: User = Depends(get_current_user),
 ):
     logger.info("strategy.rebalance_history start user_id=%s", user.user_id)
-    strategy = _latest_user_strategy(db, user.user_id)
+    strategy = _deployed_user_strategy(db, user.user_id)
     if not strategy:
         logger.info("strategy.rebalance_history no_strategy user_id=%s", user.user_id)
         return {
@@ -300,7 +332,7 @@ def force_rebalance_now(
 
     logger.info("strategy.testing.force_rebalance start user_id=%s", user.user_id)
 
-    strategy = _latest_user_strategy(db, user.user_id)
+    strategy = _deployed_user_strategy(db, user.user_id)
     if not strategy:
         logger.warning("strategy.testing.force_rebalance no_strategy user_id=%s", user.user_id)
         raise HTTPException(
@@ -377,6 +409,346 @@ def force_rebalance_now(
         "strategyId": str(strategy.strat_id),
         "status": entry.status,
         "reason": entry.reason,
+    }
+
+
+@router.post("/testing/mock-rebalance")
+def mock_rebalance_preview(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Dry-run rebalance preview:
+    - uses active/paused strategy configuration
+    - pulls available cash from Fyers funds
+    - computes momentum + target portfolio + simulated buy/sell orders
+    - never places any order
+    """
+    _ensure_testing_enabled()
+    logger.info("strategy.testing.mock_rebalance start user_id=%s", user.user_id)
+
+    strategy = _deployed_user_strategy(db, user.user_id)
+    if not strategy:
+        logger.warning("strategy.testing.mock_rebalance no_strategy user_id=%s", user.user_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "message": "No strategy deployed"},
+        )
+
+    if strategy.status not in {"active", "paused"}:
+        logger.warning(
+            "strategy.testing.mock_rebalance invalid_status strat_id=%s status=%s",
+            strategy.strat_id,
+            strategy.status,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"success": False, "message": "Strategy is not active/paused"},
+        )
+
+    pending = (
+        db.query(RebalanceQueue)
+        .filter(
+            RebalanceQueue.strat_id == strategy.strat_id,
+            RebalanceQueue.status.in_(["pending", "in_progress"]),
+        )
+        .first()
+    )
+    if pending:
+        logger.warning(
+            "strategy.testing.mock_rebalance queue_blocked strat_id=%s queue_id=%s status=%s",
+            strategy.strat_id,
+            pending.id,
+            pending.status,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"success": False, "message": "Rebalance already in progress for this strategy"},
+        )
+
+    # Reuse MATEngine internals for faithful dry-run math and checks.
+    shadow_entry = type("ShadowQueueEntry", (), {"strategy": strategy})()
+    engine = MATEngine(shadow_entry, db)
+
+    try:
+        fyers = engine._get_fyers()
+    except RuntimeError as exc:
+        logger.warning("strategy.testing.mock_rebalance broker_auth_failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"success": False, "message": f"Broker auth failed: {exc}"},
+        )
+
+    try:
+        cash = float(engine._get_cash(fyers))
+    except RuntimeError as exc:
+        logger.warning("strategy.testing.mock_rebalance funds_failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"success": False, "message": f"Unable to fetch funds from broker: {exc}"},
+        )
+
+    db_holdings = engine._load_db_holdings()
+    held_tickers = list(db_holdings.keys())
+
+    try:
+        scores, prev_close = engine._compute_momentum(strategy)
+    except Exception as exc:
+        logger.exception("strategy.testing.mock_rebalance momentum_failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"success": False, "message": f"Momentum calculation failed: {exc}"},
+        )
+
+    if not scores:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"success": False, "message": "No momentum scores available"},
+        )
+
+    n_target = int(strategy.n_stocks)
+    n_candidates = int(n_target * 1.5)
+    candidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n_candidates]
+    candidate_tickers = [t for t, _ in candidates]
+
+    quote_tickers = sorted(set(candidate_tickers) | set(held_tickers))
+    try:
+        quotes = engine._get_quotes(fyers, quote_tickers) if quote_tickers else {}
+    except Exception as exc:
+        logger.warning("strategy.testing.mock_rebalance quotes_failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"success": False, "message": f"Unable to fetch quotes: {exc}"},
+        )
+
+    equity_value = sum(
+        int(db_holdings[t]["qty"] or 0) * float(quotes.get(t, {}).get("ltp", 0) or 0)
+        for t in held_tickers
+    )
+    total_capital = cash + equity_value
+    working_capital = total_capital * (1 - CASH_BUFFER)
+
+    target_tickers = []
+    uc_candidates = []
+    for ticker, _score in candidates:
+        if len(target_tickers) >= n_target:
+            break
+        if ticker not in prev_close or float(prev_close[ticker] or 0) <= 0:
+            continue
+        q = quotes.get(ticker)
+        if q and engine._is_uc(q):
+            uc_candidates.append(ticker)
+            if len(uc_candidates) > n_target / 2:
+                return {
+                    "success": True,
+                    "dryRun": True,
+                    "strategyId": str(strategy.strat_id),
+                    "status": "skipped",
+                    "reason": "UC_GLOBAL_EVENT",
+                    "checks": {
+                        "ordersPunched": False,
+                        "ucCandidates": uc_candidates,
+                    },
+                    "funds": {
+                        "availableCashFromFyers": round(cash, 2),
+                        "equityFromTrackedHoldings": round(equity_value, 2),
+                        "totalCapital": round(total_capital, 2),
+                        "workingCapital": round(working_capital, 2),
+                    },
+                    "targetPortfolio": [],
+                    "simulatedOrders": {"sell": [], "buy": []},
+                }
+            continue
+        target_tickers.append(ticker)
+
+    if not target_tickers:
+        return {
+            "success": True,
+            "dryRun": True,
+            "strategyId": str(strategy.strat_id),
+            "status": "failed",
+            "reason": "NO_ELIGIBLE_STOCKS",
+            "checks": {
+                "ordersPunched": False,
+                "ucCandidates": uc_candidates,
+            },
+            "funds": {
+                "availableCashFromFyers": round(cash, 2),
+                "equityFromTrackedHoldings": round(equity_value, 2),
+                "totalCapital": round(total_capital, 2),
+                "workingCapital": round(working_capital, 2),
+            },
+            "targetPortfolio": [],
+            "simulatedOrders": {"sell": [], "buy": []},
+        }
+
+    alloc_pre = working_capital / len(target_tickers)
+    target_set = set(target_tickers)
+
+    sells_exit = {}
+    sells_trim = {}
+    for ticker, held in db_holdings.items():
+        held_qty = int(held.get("qty") or 0)
+        if held_qty <= 0:
+            continue
+        if ticker not in target_set:
+            sells_exit[ticker] = held_qty
+        else:
+            pre_target_qty = int(alloc_pre / float(prev_close.get(ticker, 0) or 1))
+            if held_qty > pre_target_qty:
+                trim_qty = held_qty - pre_target_qty
+                if trim_qty > 0:
+                    sells_trim[ticker] = trim_qty
+
+    lc_tickers = [
+        t for t in (list(sells_exit) + list(sells_trim))
+        if engine._is_lc(quotes.get(t, {}))
+    ]
+    if lc_tickers:
+        return {
+            "success": True,
+            "dryRun": True,
+            "strategyId": str(strategy.strat_id),
+            "status": "skipped",
+            "reason": "LC_DETECTED",
+            "checks": {
+                "ordersPunched": False,
+                "lcTickers": lc_tickers,
+                "ucCandidates": uc_candidates,
+            },
+            "funds": {
+                "availableCashFromFyers": round(cash, 2),
+                "equityFromTrackedHoldings": round(equity_value, 2),
+                "totalCapital": round(total_capital, 2),
+                "workingCapital": round(working_capital, 2),
+            },
+            "targetPortfolio": [],
+            "simulatedOrders": {"sell": [], "buy": []},
+        }
+
+    sell_orders = []
+    estimated_sell_net = 0.0
+    for ticker in list(sells_exit) + list(sells_trim):
+        qty = int(sells_exit.get(ticker) or sells_trim.get(ticker) or 0)
+        ltp = float(quotes.get(ticker, {}).get("ltp", prev_close.get(ticker, 0)) or 0)
+        gross = qty * ltp
+        est_cost = _sell_cost(gross)
+        est_net = max(0.0, gross - est_cost)
+        estimated_sell_net += est_net
+        sell_orders.append(
+            {
+                "symbol": ticker,
+                "side": "SELL",
+                "qty": qty,
+                "ltp": round(ltp, 4),
+                "grossValue": round(gross, 2),
+                "estimatedCharges": round(est_cost, 2),
+                "estimatedNet": round(est_net, 2),
+                "reason": "EXIT" if ticker in sells_exit else "TRIM",
+            }
+        )
+
+    current_qty = {t: int(v.get("qty") or 0) for t, v in db_holdings.items()}
+    for ticker, qty in sells_exit.items():
+        current_qty[ticker] = max(0, current_qty.get(ticker, 0) - int(qty))
+    for ticker, qty in sells_trim.items():
+        current_qty[ticker] = max(0, current_qty.get(ticker, 0) - int(qty))
+
+    estimated_post_sell_cash = cash + estimated_sell_net
+    buy_budget = estimated_post_sell_cash * (1 - CASH_BUFFER)
+    alloc_post = buy_budget / len(target_tickers)
+
+    base_qty = {}
+    for ticker in target_tickers:
+        close = float(prev_close.get(ticker, 0) or 0)
+        base_qty[ticker] = int(alloc_post / close) if close > 0 else 0
+
+    base_cost = sum(base_qty[t] * float(prev_close[t]) for t in target_tickers if float(prev_close.get(t, 0) or 0) > 0)
+    residual = buy_budget - base_cost
+
+    remainders = [
+        (t, alloc_post - base_qty[t] * float(prev_close[t]))
+        for t in target_tickers
+        if float(prev_close.get(t, 0) or 0) > 0
+    ]
+    remainders.sort(key=lambda x: x[1], reverse=True)
+
+    greedy_qty = dict(base_qty)
+    for ticker, _ in remainders:
+        close = float(prev_close[ticker])
+        if residual >= close:
+            greedy_qty[ticker] += 1
+            residual -= close
+
+    buy_orders = []
+    uc_buy_skipped = []
+    for ticker in target_tickers:
+        diff = int(greedy_qty.get(ticker, 0) - current_qty.get(ticker, 0))
+        if diff <= 0:
+            continue
+        q = quotes.get(ticker)
+        if q and engine._is_uc(q):
+            uc_buy_skipped.append(ticker)
+            continue
+        ltp = float(quotes.get(ticker, {}).get("ltp", prev_close.get(ticker, 0)) or 0)
+        buy_orders.append(
+            {
+                "symbol": ticker,
+                "side": "BUY",
+                "qty": diff,
+                "ltp": round(ltp, 4),
+                "estimatedValue": round(diff * ltp, 2),
+                "reason": "NEW" if int(db_holdings.get(ticker, {}).get("qty") or 0) == 0 else "TOP_UP",
+            }
+        )
+
+    target_portfolio = []
+    for ticker in target_tickers:
+        target_portfolio.append(
+            {
+                "symbol": ticker,
+                "momentumScore": round(float(scores.get(ticker, 0.0)), 8),
+                "prevClose": round(float(prev_close.get(ticker, 0.0)), 4),
+                "ltp": round(float(quotes.get(ticker, {}).get("ltp", 0.0)), 4),
+                "currentQty": int(db_holdings.get(ticker, {}).get("qty") or 0),
+                "targetQty": int(greedy_qty.get(ticker, 0)),
+                "deltaQty": int(greedy_qty.get(ticker, 0) - int(db_holdings.get(ticker, {}).get("qty") or 0)),
+                "isUC": bool(engine._is_uc(quotes.get(ticker, {}))),
+            }
+        )
+
+    logger.info(
+        "strategy.testing.mock_rebalance done strat_id=%s target=%d sell=%d buy=%d",
+        strategy.strat_id,
+        len(target_portfolio),
+        len(sell_orders),
+        len(buy_orders),
+    )
+
+    return {
+        "success": True,
+        "dryRun": True,
+        "ordersPunched": False,
+        "strategyId": str(strategy.strat_id),
+        "strategyStatus": strategy.status,
+        "funds": {
+            "availableCashFromFyers": round(cash, 2),
+            "equityFromTrackedHoldings": round(equity_value, 2),
+            "totalCapital": round(total_capital, 2),
+            "workingCapital": round(working_capital, 2),
+            "estimatedPostSellCash": round(estimated_post_sell_cash, 2),
+            "estimatedBuyBudget": round(buy_budget, 2),
+        },
+        "checks": {
+            "ucCandidatesSkipped": uc_candidates,
+            "ucBuySkipped": uc_buy_skipped,
+            "lcTickers": [],
+        },
+        "targetPortfolio": target_portfolio,
+        "simulatedOrders": {
+            "sell": sell_orders,
+            "buy": buy_orders,
+        },
     }
 
 
