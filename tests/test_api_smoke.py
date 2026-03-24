@@ -131,6 +131,7 @@ class TestApiContract(TestCase):
                 _FakeQuery(all_result=price_rows),
                 _FakeQuery(all_result=ticker_name_rows),
                 _FakeQuery(all_result=holding_rows),
+                _FakeQuery(first_result=None),
                 _FakeQuery(first_result=last_done),
             ]
         )

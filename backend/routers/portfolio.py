@@ -1,14 +1,18 @@
 from datetime import date, timedelta
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fyers_apiv3 import fyersModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from backend.config import settings
 from backend.core.live_prices import get_live_price_store
 from backend.core.deps import get_current_user
+from backend.core.security import decrypt_token
 from backend.database import get_db
-from backend.models import Holdings, Portfolio, RebalanceQueue, StockPrice, StockTicker, Strategy, User
+from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, StockPrice, StockTicker, Strategy, User
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 logger = logging.getLogger(__name__)
@@ -24,6 +28,96 @@ UNIVERSE_LABELS = {
 
 def _num(v) -> float:
     return float(v or 0)
+
+
+def _extract_available_cash(funds_resp: dict) -> float | None:
+    if funds_resp.get("s") != "ok":
+        return None
+    limits = funds_resp.get("fund_limit", []) or []
+    for item in limits:
+        title = str(item.get("title", ""))
+        if "Available Balance" in title or "available_balance" in title.lower():
+            return float(item.get("equityAmount", item.get("val", 0)) or 0)
+    if limits:
+        return sum(float(i.get("equityAmount", i.get("val", 0)) or 0) for i in limits)
+    return None
+
+
+def _extract_positions_snapshot(positions_resp: dict) -> tuple[float, float, float] | None:
+    if positions_resp.get("s") != "ok":
+        return None
+
+    rows = positions_resp.get("netPositions") or positions_resp.get("overall") or []
+    invested = 0.0
+    current_value = 0.0
+    pnl = 0.0
+
+    for row in rows:
+        qty = abs(int(row.get("netQty", row.get("qty", 0)) or 0))
+        if qty <= 0:
+            continue
+
+        avg = float(row.get("netAvg", row.get("avgPrice", row.get("buyAvg", 0))) or 0)
+        ltp = float(row.get("ltp", 0) or 0)
+        market_val = float(row.get("marketVal", 0) or 0)
+        pl = float(row.get("pl", row.get("pnl", 0)) or 0)
+
+        pos_invested = qty * avg if avg > 0 else 0.0
+        pos_current = market_val if market_val > 0 else (qty * ltp if ltp > 0 else pos_invested)
+
+        invested += pos_invested
+        current_value += pos_current
+        pnl += pl if pl != 0 else (pos_current - pos_invested)
+
+    return invested, current_value, pnl
+
+
+def _fetch_fyers_summary(db: Session, user_id) -> dict | None:
+    try:
+        broker_session = (
+            db.query(BrokerSession)
+            .filter(
+                BrokerSession.user_id == user_id,
+                BrokerSession.token_date == date.today(),
+            )
+            .order_by(BrokerSession.created_at.desc())
+            .first()
+        )
+        if not broker_session:
+            return None
+
+        token = decrypt_token(broker_session.access_token_encrypted)
+        Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
+        fyers = fyersModel.FyersModel(
+            client_id=settings.fyers_app_id,
+            token=token,
+            is_async=False,
+            log_path=settings.log_dir,
+        )
+
+        funds_resp = fyers.funds()
+        positions_resp = fyers.positions()
+
+        cash = _extract_available_cash(funds_resp)
+        positions = _extract_positions_snapshot(positions_resp)
+        if cash is None or positions is None:
+            return None
+
+        invested, positions_value, pnl_positions = positions
+        total_value = cash + positions_value
+        pnl_pct = (pnl_positions / invested * 100.0) if invested > 0 else 0.0
+
+        return {
+            "invested": invested,
+            "cash": cash,
+            "positionsValue": positions_value,
+            "currentValue": total_value,
+            "pnl": pnl_positions,
+            "pnlPct": pnl_pct,
+        }
+    except Exception:
+        logger.debug("portfolio.get fyers_summary_unavailable user_id=%s", user_id, exc_info=True)
+        return None
 
 
 def _pick_user_strategy(db: Session, user_id):
@@ -133,13 +227,22 @@ def get_portfolio(
             }
         )
 
-    cash = _num(strategy.unused_capital)
-    current_value = round(live_equity + cash, 2) if used_live_price else _num(strategy.market_value)
-    # Strategy-level PnL should be measured against deployed capital, not
-    # current holdings cost, so closed positions are reflected correctly.
-    baseline_capital = _num(strategy.capital)
-    pnl = current_value - baseline_capital
-    pnl_pct = (pnl / baseline_capital * 100) if baseline_capital > 0 else 0.0
+    fyers_summary = _fetch_fyers_summary(db, user.user_id)
+    if fyers_summary:
+        invested_summary = _num(fyers_summary["invested"])
+        cash = _num(fyers_summary["cash"])
+        current_value = _num(fyers_summary["currentValue"])
+        pnl = _num(fyers_summary["pnl"])
+        pnl_pct = _num(fyers_summary["pnlPct"])
+        summary_price_source = "fyers"
+    else:
+        cash = _num(strategy.unused_capital)
+        current_value = round(live_equity + cash, 2) if used_live_price else _num(strategy.market_value)
+        # Fallback when broker snapshot is unavailable.
+        invested_summary = invested_total
+        pnl = current_value - invested_summary
+        pnl_pct = (pnl / invested_summary * 100) if invested_summary > 0 else 0.0
+        summary_price_source = "live" if used_live_price else "snapshot"
 
     last_done = (
         db.query(RebalanceQueue)
@@ -177,12 +280,12 @@ def get_portfolio(
             ),
         },
         "summary": {
-            "invested": round(invested_total, 2),
+            "invested": round(invested_summary, 2),
             "currentValue": round(current_value, 2),
             "pnl": round(pnl, 2),
             "pnlPct": round(pnl_pct, 2),
             "cash": round(cash, 2),
-            "priceSource": "live" if used_live_price else "snapshot",
+            "priceSource": summary_price_source,
         },
         "holdings": holdings_payload,
     }
