@@ -737,9 +737,12 @@ export default function Dashboard() {
     setPortfolio(prev => {
       if (!prev?.summary) return prev;
       
-      // ✅ VALIDATE INCOMING SUMMARY DATA
+      // ✅ VALIDATE INCOMING DATA ONLY — NO RECALCULATION
       const newCurrentValue = Number(summary.currentValue);
       const newCash = Number(summary.cash);
+      const newPnl = Number(summary.pnl);
+      const newPnlPct = Number(summary.pnlPct);
+      const newInvested = Number(summary.invested);
       
       if (!Number.isFinite(newCurrentValue)) {
         console.warn("Invalid currentValue:", summary.currentValue);
@@ -749,23 +752,28 @@ export default function Dashboard() {
         console.warn("Invalid cash:", summary.cash);
         return prev;
       }
-      
-      const invested = Number(prev.summary.invested);
-      if (!Number.isFinite(invested) || invested <= 0) {
+      if (!Number.isFinite(newPnl)) {
+        console.warn("Invalid pnl:", summary.pnl);
         return prev;
       }
-      
-      const pnl = newCurrentValue - invested;
-      const pnlPct = (pnl / invested) * 100;
+      if (!Number.isFinite(newPnlPct)) {
+        console.warn("Invalid pnlPct:", summary.pnlPct);
+        return prev;
+      }
+      if (!Number.isFinite(newInvested)) {
+        console.warn("Invalid invested:", summary.invested);
+        return prev;
+      }
       
       return {
         ...prev,
         summary: {
           ...prev.summary,
+          invested: newInvested,
           currentValue: newCurrentValue,
           cash: newCash,
-          pnl,
-          pnlPct,
+          pnl: newPnl,           // ← Use backend value directly
+          pnlPct: newPnlPct,     // ← Use backend value directly
           priceSource: "live",
         },
       };
