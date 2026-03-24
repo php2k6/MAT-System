@@ -8,7 +8,7 @@ import {
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 const WS_BASE_URL  = import.meta.env.VITE_WS_BASE_URL
-  || API_BASE_URL.replace(/^https?/, "ws").replace(/^http/, "ws");
+  || API_BASE_URL.replace(/^http/, "ws"); // http->ws, https->wss
 
 const CHART_RANGES = ["1W", "1M", "3M", "1Y", "3Y", "5Y", "10Y", "MAX"];
 
@@ -59,6 +59,8 @@ function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauth
   const wsRef          = useRef(null);
   const reconnectTimer = useRef(null);
   const unmounted      = useRef(false);
+  const reconnectCount = useRef(0);  // ✅ ADD THIS
+  const MAX_RECONNECTS = 5;          // ✅ ADD THIS
   const [wsStatus, setWsStatus] = useState("disconnected");
 
   const connect = useCallback(() => {
@@ -70,7 +72,10 @@ function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauth
     wsRef.current = ws;
 
     ws.onopen = () => {
-      if (!unmounted.current) setWsStatus("live");
+      if (!unmounted.current) {
+        setWsStatus("live");
+        reconnectCount.current = 0;  // ✅ Reset on success
+      }
     };
 
     ws.onmessage = (event) => {
@@ -110,15 +115,27 @@ function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauth
 
     ws.onclose = (event) => {
       if (unmounted.current) return;
+      
       if (event.code === 4401) {
         setWsStatus("disconnected");
         onUnauthorized();
         return;
       }
+      
+      reconnectCount.current++;  // ✅ Increment counter
+      
+      // ✅ Stop after max retries
+      if (reconnectCount.current >= MAX_RECONNECTS) {
+        console.error("Max WebSocket reconnection attempts reached");
+        setWsStatus("disconnected");
+        return;
+      }
+      
       setWsStatus("disconnected");
+      const backoffDelay = 4000 * reconnectCount.current;  // ✅ Exponential backoff
       reconnectTimer.current = setTimeout(() => {
         if (!unmounted.current) connect();
-      }, 4000);
+      }, backoffDelay);
     };
   }, [enabled, onHoldingsUpdate, onSummaryUpdate, onUnauthorized]);
 
@@ -211,7 +228,7 @@ function ConfirmModal({ action, onConfirm, onCancel }) {
       desc: (
         <div>
           <p style={{ marginBottom: 10, fontSize: 13, color: "#555", lineHeight: 1.6 }}>
-            This will permanently halt the strategy and clear all dashboard data. You will need to redeploy to start again.
+            This will <strong>immediately halt</strong> the strategy. <strong>All holdings remain in your account</strong> — you must manually sell them in your broker.
           </p>
           <div style={{
             display: "flex", gap: 8, alignItems: "flex-start",
@@ -220,12 +237,12 @@ function ConfirmModal({ action, onConfirm, onCancel }) {
           }}>
             <span style={{ fontSize: 15, flexShrink: 0 }}>⚠</span>
             <span style={{ fontSize: 12, color: "#92400e", lineHeight: 1.55 }}>
-              <strong>Your holdings are not sold automatically.</strong> You must manually exit all positions in your broker account after stopping the strategy.
+              <strong>Action cannot be undone.</strong> After stopping, you will need to redeploy to restart the strategy.
             </span>
           </div>
         </div>
       ),
-      btn: "Stop & Clear Dashboard", btnBg: "#dc2626",
+      btn: "Stop Strategy Now", btnBg: "#dc2626",
     },
     pause: {
       title: "Pause Strategy",
@@ -532,8 +549,9 @@ function DayZeroBanner({ nextRebalance }) {
         </div>
         <div style={{ fontSize: 12, color: "#3b5bdb", lineHeight: 1.65 }}>
           Your strategy is live and configured. Holdings and portfolio value will appear here after
-          the first rebalance{nextRebalance ? ` on <strong>${nextRebalance}</strong>` : ""}.
-          No action is needed from your side.
+          the first rebalance
+          {nextRebalance ? <> on <strong>{nextRebalance}</strong></> : null}.
+          {" "}No action is needed from your side.
         </div>
         {nextRebalance && (
           <div style={{ marginTop: 8, fontSize: 11, color: "#1d4ed8", fontWeight: 600 }}>
@@ -652,13 +670,24 @@ export default function Dashboard() {
     if (view !== "chart") return;
     setChartLoading(true);
     api.getChartData(range)
-      .then(data => { setChartData(data); setChartLoading(false); })
+      .then(data => {
+        // ✅ VALIDATE CHART DATA
+        const cleanData = (data ?? [])
+          .filter(d => {
+            const val = Number(d.value);
+            return Number.isFinite(val) && val > 0 && d.date;
+          })
+          .sort((a, b) => new Date(a.date) - new Date(b.date));
+        
+        setChartData(cleanData);
+        setChartLoading(false);
+      })
       .catch(err => {
         setChartLoading(false);
         if (err.message === "UNAUTHORIZED") navigate("/login");
         else setError(err.message || "Failed to load chart.");
       });
-  }, [view, range]);
+  }, [view, range, navigate]);
 
   const handleHoldingsUpdate = useCallback((items) => {
     setPortfolio(prev => {
@@ -666,11 +695,39 @@ export default function Dashboard() {
       const updatedHoldings = prev.holdings.map(h => {
         const update = items.find(i => i.symbol === h.symbol);
         if (!update) return h;
-        const ltp   = update.ltp;
-        const value = ltp * h.qty;
-        const pnl   = value - h.avgPrice * h.qty;
-        const pnlPct = ((ltp - h.avgPrice) / h.avgPrice) * 100;
-        return { ...h, ltp, value, pnl, pnlPct, priceSource: "live", priceTs: update.ts };
+        
+        // ✅ VALIDATE ALL INCOMING DATA
+        const ltp = Number(update.ltp);
+        if (!Number.isFinite(ltp) || ltp <= 0) {
+          console.warn(`Invalid LTP for ${h.symbol}:`, update.ltp);
+          return h;  // Skip invalid update
+        }
+        
+        const avgPrice = Number(h.avgPrice);
+        if (!Number.isFinite(avgPrice) || avgPrice <= 0) {
+          console.warn(`Invalid avgPrice for ${h.symbol}:`, h.avgPrice);
+          return h;
+        }
+        
+        const qty = Number(h.qty);
+        if (!Number.isFinite(qty) || qty <= 0) {
+          console.warn(`Invalid qty for ${h.symbol}:`, h.qty);
+          return h;
+        }
+        
+        const value = ltp * qty;
+        const pnl   = value - avgPrice * qty;
+        const pnlPct = ((ltp - avgPrice) / avgPrice) * 100;
+        
+        return { 
+          ...h, 
+          ltp, 
+          value, 
+          pnl, 
+          pnlPct, 
+          priceSource: "live", 
+          priceTs: update.ts 
+        };
       });
       return { ...prev, holdings: updatedHoldings };
     });
@@ -679,18 +736,34 @@ export default function Dashboard() {
   const handleSummaryUpdate = useCallback((summary) => {
     setPortfolio(prev => {
       if (!prev?.summary) return prev;
-      const newCurrentValue = summary.currentValue ?? prev.summary.currentValue;
-      const newCash         = summary.cash         ?? prev.summary.cash;
-      const pnl             = newCurrentValue - prev.summary.invested;
-      const pnlPct          = prev.summary.invested > 0
-        ? (pnl / prev.summary.invested) * 100
-        : prev.summary.pnlPct;
+      
+      // ✅ VALIDATE INCOMING SUMMARY DATA
+      const newCurrentValue = Number(summary.currentValue);
+      const newCash = Number(summary.cash);
+      
+      if (!Number.isFinite(newCurrentValue)) {
+        console.warn("Invalid currentValue:", summary.currentValue);
+        return prev;
+      }
+      if (!Number.isFinite(newCash)) {
+        console.warn("Invalid cash:", summary.cash);
+        return prev;
+      }
+      
+      const invested = Number(prev.summary.invested);
+      if (!Number.isFinite(invested) || invested <= 0) {
+        return prev;
+      }
+      
+      const pnl = newCurrentValue - invested;
+      const pnlPct = (pnl / invested) * 100;
+      
       return {
         ...prev,
         summary: {
           ...prev.summary,
           currentValue: newCurrentValue,
-          cash:         newCash,
+          cash: newCash,
           pnl,
           pnlPct,
           priceSource: "live",
@@ -705,7 +778,11 @@ export default function Dashboard() {
     navigate("/login");
   }, [navigate]);
 
-  const wsEnabled = !!(portfolio?.strategyDeployed && portfolio?.strategy);
+  const wsEnabled = !!(
+    portfolio?.strategyDeployed &&
+    portfolio?.strategy &&
+    portfolio?.strategy?.status === "active"
+  );
 
   const wsStatus = useLiveWebSocket({
     enabled: wsEnabled,
@@ -720,27 +797,17 @@ export default function Dashboard() {
     const action = confirmAction;
     setConfirmAction(null);
     setActionLoading(true);
+    setError(null); // clear stale error before new action
 
     try {
       await api.postAction(action);
 
-      if (action === "stop") {
-        setPortfolio(prev => ({
-          ...prev,
-          strategyDeployed: false,
-          strategy: null,
-          summary: { invested: 0, currentValue: 0, pnl: 0, pnlPct: 0, cash: 0 },
-          holdings: [],
-        }));
-        setView(null);
-      } else {
-        setPortfolio(prev => ({
-          ...prev,
-          strategy: {
-            ...prev.strategy,
-            status: action === "pause" ? "paused" : "active",
-          },
-        }));
+      const fresh = await api.getPortfolio();
+      setPortfolio(fresh);
+      setView(null);
+
+      if (action === "stop" && fresh?.strategyDeployed) {
+        setError("Stop request sent, but strategy is still deployed on server. Please check backend stop logic.");
       }
     } catch (err) {
       if (err.message === "UNAUTHORIZED") navigate("/login");
@@ -759,14 +826,35 @@ export default function Dashboard() {
     </div>
   );
 
-  if (!portfolio) return (
-    <div style={{
-      minHeight: "calc(100vh - 56px)", background: "#f2f2f2",
-      display: "flex", alignItems: "center", justifyContent: "center",
-    }}>
-      <Spinner size={34} />
-    </div>
-  );
+  if (!portfolio) {
+    if (offline) {
+      return (
+        <div style={{
+          minHeight: "calc(100vh - 56px)", background: "#f2f2f2",
+          display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 20,
+        }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#333", marginBottom: 8 }}>
+              Connection Lost
+            </div>
+            <div style={{ fontSize: 13, color: "#666", marginBottom: 20 }}>
+              Unable to load portfolio. Retrying automatically...
+            </div>
+            <button
+              onClick={handleManualRetry}
+              style={{
+                padding: "10px 24px", borderRadius: 6, border: "none",
+                background: "#222", color: "#fff",
+                fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: SYS,
+              }}
+            >
+              Retry Now
+            </button>
+          </div>
+        </div>
+      );
+    }
+  }
 
   const { user, summary, holdings, strategyDeployed, strategy } = portfolio;
   const pnlPos = (summary?.pnl ?? 0) >= 0;
@@ -975,6 +1063,10 @@ export default function Dashboard() {
                       <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <Spinner size={28} />
                       </div>
+                    ) : chartData?.length === 0 ? (
+                      <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: 13 }}>
+                        No chart data available for this range
+                      </div>
                     ) : (
                       <ResponsiveContainer width="100%" height={270}>
                         <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 0 }}>
@@ -1041,36 +1133,40 @@ export default function Dashboard() {
                         {(holdings ?? []).length === 0
                           ? <HoldingsEmptyRow />  /* [NEW] empty state row */
                           : (holdings ?? []).map(h => {
-                              const pos    = h.pnl >= 0;
-                              const dayPos = h.dayChange >= 0;
-                              return (
-                                <tr key={h.symbol}>
-                                  <td>
-                                    <div className="db-sym">{h.symbol}</div>
-                                    <div className="db-sym-name">{h.name}</div>
-                                  </td>
-                                  <td>{h.qty}</td>
-                                  <td>{fmt(h.avgPrice)}</td>
-                                  <td style={{ color: "#111", fontWeight: 600 }}
-                                      key={`ltp-${h.symbol}-${h.priceTs}`}
-                                      className={h.priceSource === "live" ? "ltp-flash" : ""}>
-                                    {fmt(h.ltp)}
-                                  </td>
-                                  <td>{fmtCompact(h.value)}</td>
-                                  <td>
-                                    <span className={pos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
-                                      {pos ? "+" : ""}{fmtCompact(h.pnl)}
-                                    </span>
-                                    <div className={`db-pnl-pct ${pos ? "pos-text" : "neg-text"}`}>
-                                      {pos ? "▲" : "▼"} {Math.abs(h.pnlPct).toFixed(2)}%
-                                    </div>
-                                  </td>
-                                  <td className={dayPos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
-                                    {dayPos ? "+" : ""}{h.dayChange.toFixed(2)}%
-                                  </td>
-                                </tr>
-                              );
-                            })
+                            const pos = h.pnl >= 0;
+
+                            const dc = Number(h.dayChange);
+                            const dayChange = Number.isFinite(dc) ? dc : 0;
+                            const dayPos = dayChange >= 0;
+
+                            return (
+                              <tr key={h.symbol}>
+                                <td>
+                                  <div className="db-sym">{h.symbol}</div>
+                                  {h.name && <div className="db-sym-name">{h.name}</div>}
+                                </td>
+                                <td>{h.qty}</td>
+                                <td>{fmt(h.avgPrice)}</td>
+                                <td style={{ color: "#111", fontWeight: 600 }}
+                                    key={`ltp-${h.symbol}-${h.priceTs}`}
+                                    className={h.priceSource === "live" ? "ltp-flash" : ""}>
+                                  {fmt(h.ltp)}
+                                </td>
+                                <td>{fmtCompact(h.value)}</td>
+                                <td>
+                                  <span className={pos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
+                                    {pos ? "+" : ""}{fmtCompact(h.pnl)}
+                                  </span>
+                                  <div className={`db-pnl-pct ${pos ? "pos-text" : "neg-text"}`}>
+                                    {pos ? "▲" : "▼"} {Math.abs(h.pnlPct).toFixed(2)}%
+                                  </div>
+                                </td>
+                                <td className={dayPos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
+                                  {dayPos ? "+" : ""}{dayChange.toFixed(2)}%
+                                </td>
+                              </tr>
+                            );
+                          })
                         }
                       </tbody>
                     </table>
