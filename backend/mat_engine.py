@@ -63,7 +63,7 @@ EXCHANGE_CHARGE = 0.0000325
 SEBI_CHARGE     = 0.000001
 GST_RATE        = 0.18
 STAMP_DUTY_BUY  = 0.00015
-CASH_BUFFER     = 0.005           # 0.5 % of total capital kept as reserve
+CASH_BUFFER     = min(max(float(settings.mat_cash_buffer), 0.0), 0.5)
 
 # ── Momentum constants (matching backtest) ────────────────────────────────────
 TRADING_DAYS_PER_MONTH = 21
@@ -71,9 +71,11 @@ WEIGHT_1               = 0.5
 WEIGHT_2               = 0.5
 
 # ── Execution constants ───────────────────────────────────────────────────────
-ORDER_WAIT_SECS     = 120   # max wait for fill confirmation
-ORDER_POLL_INTERVAL = 5     # seconds between orderbook polls
-_ORDER_MIN_INTERVAL = 0.11  # 110 ms min between order placements (SEBI 10/s cap)
+ORDER_WAIT_SECS     = max(int(settings.mat_order_wait_seconds), 1)
+ORDER_POLL_INTERVAL = max(int(settings.mat_order_poll_interval_seconds), 1)
+_ORDER_MIN_INTERVAL = max(float(settings.mat_order_min_interval_seconds), 0.0)
+CANDIDATE_POOL_MULTIPLIER = max(float(settings.mat_candidate_pool_multiplier), 1.0)
+FYERS_QUOTES_CHUNK_SIZE = max(int(settings.fyers_quotes_chunk_size), 1)
 
 # Fyers order status codes
 _STATUS_TRADED    = 2
@@ -212,7 +214,7 @@ class MATEngine:
 
         # ── 6. Candidate list: top N × 1.5 ────────────────────────────────────
         n_target      = strat.n_stocks
-        n_candidates  = int(n_target * 1.5)
+        n_candidates  = max(n_target, int(n_target * CANDIDATE_POOL_MULTIPLIER))
         candidates    = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n_candidates]
         cand_tickers  = [t for t, _ in candidates]
 
@@ -492,7 +494,7 @@ class MATEngine:
         Fyers quotes endpoint accepts up to ~50 symbols per call; we chunk if needed.
         """
         result: dict[str, dict] = {}
-        chunk_size = 50
+        chunk_size = FYERS_QUOTES_CHUNK_SIZE
 
         for i in range(0, len(tickers), chunk_size):
             chunk   = tickers[i : i + chunk_size]

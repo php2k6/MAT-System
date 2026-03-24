@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     redis_price_ttl_seconds: int = 900
     live_price_stale_after_seconds: int = 90
     live_price_refresh_seconds: int = 15
+    fyers_quotes_chunk_size: int = 50
+
+    # MAT engine runtime controls
+    mat_cash_buffer: float = 0.005
+    mat_order_wait_seconds: int = 120
+    mat_order_poll_interval_seconds: int = 5
+    mat_order_min_interval_seconds: float = 0.11
+    mat_candidate_pool_multiplier: float = 1.5
 
     # Logging
     log_level: str = "INFO"

@@ -117,7 +117,8 @@ def refresh_live_prices() -> dict:
             return {"status": "skipped", "reason": "no_active_broker_session", "updated": 0}
 
         prices: dict[str, float] = {}
-        for chunk in _iter_chunks(tickers, 50):
+        chunk_size = max(int(settings.fyers_quotes_chunk_size), 1)
+        for chunk in _iter_chunks(tickers, chunk_size):
             symbols = ",".join(f"NSE:{t}-EQ" for t in chunk)
             resp = fyers.quotes({"symbols": symbols, "ohlcv_flag": 1})
             if resp.get("s") != "ok":
