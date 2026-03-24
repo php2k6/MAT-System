@@ -507,7 +507,7 @@ def mock_rebalance_preview(
         )
 
     n_target = int(strategy.n_stocks)
-    n_candidates = int(n_target * 1.5)
+    n_candidates = max(n_target, int(n_target * max(float(settings.mat_candidate_pool_multiplier), 1.0)))
     candidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n_candidates]
     candidate_tickers = [t for t, _ in candidates]
 
