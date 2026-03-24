@@ -898,6 +898,11 @@ export default function Dashboard() {
         @media (max-width: 860px) { .db-summary { grid-template-columns: repeat(2, 1fr); } .db-root { padding: 18px 14px 60px; } }
         @media (max-width: 480px) { .db-summary { grid-template-columns: 1fr; } }
 
+        /* NEW: responsive deployment snapshot grid */
+        .db-deploy-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+        @media (max-width: 860px) { .db-deploy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (max-width: 560px) { .db-deploy-grid { grid-template-columns: 1fr; } }
+
         @keyframes statIn  { to { opacity: 1; transform: translateY(0); } }
         @keyframes panelIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes dbSpin  { to { transform: rotate(360deg); } }
@@ -1228,7 +1233,7 @@ function DeploymentSnapshot({ initialCapital, currentValue }) {
       </div>
 
       <div style={{ padding: 12 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 10 }}>
+        <div className="db-deploy-grid">
           <div style={itemStyle}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#999", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8, fontFamily: SYS }}>
               Initial Capital
