@@ -63,31 +63,51 @@ def _compute_indicators_full(stock_df: pd.DataFrame, window: int, annualise: boo
 
 
 def _recompute_tail(stock_df: pd.DataFrame, window: int, annualise: bool) -> tuple[pd.DataFrame, pd.Timestamp]:
-    stock_df = stock_df.sort_values("date").reset_index(drop=True)
-    n = len(stock_df)
+    """
+    Recompute indicators for recent rows only, with enough lookback context.
+    Prevents overwriting older valid volatility values with rolling NaNs.
+    BUG FIX [2]: Seeds context_df with prior row, drops seed after calculation,
+    and patches back into original to preserve pre-existing valid columns.
+    """
+    out = stock_df.sort_values("date").reset_index(drop=True).copy()
+    n = len(out)
 
-    recompute_len = window + 5
-    context_start = max(0, n - recompute_len - window)
+    if n == 0:
+        return out, _to_ts(pd.Timestamp.today())
 
-    head_df = stock_df.iloc[:context_start].copy()
-    context_df = stock_df.iloc[context_start:].copy()
+    # Initialize missing columns
+    for col in ["daily_return", "log_return", "volatility_1y"]:
+        if col not in out.columns:
+            out[col] = np.nan
 
-    if not head_df.empty:
-        seed = head_df.iloc[[-1]][["date", "close"]].copy()
-        context_df = pd.concat([seed, context_df], ignore_index=True)
+    tail_rows = window + 5
+    recompute_start = max(0, n - tail_rows)
+    calc_start = max(0, recompute_start - window)
 
-    context_df["daily_return"] = context_df["close"].pct_change()
-    context_df["log_return"] = np.log(context_df["close"] / context_df["close"].shift(1))
-    rolling_std = context_df["log_return"].rolling(window=window, min_periods=window).std()
-    context_df["volatility_1y"] = rolling_std * (math.sqrt(252) if annualise else 1.0)
+    calc_df = out.iloc[calc_start:].copy()
 
-    if not head_df.empty:
-        changed_from = _to_ts(head_df["date"].iloc[-1])
-        context_df = context_df[context_df["date"] > changed_from]
-        return pd.concat([head_df, context_df], ignore_index=True), changed_from
+    # Seed with one prior row for pct_change() — dropped before patching back
+    if calc_start > 0:
+        seed = out.iloc[[calc_start - 1]][["date", "close"]].copy()
+        calc_df = pd.concat([seed, calc_df], ignore_index=True)
 
-    changed_from = _to_ts(stock_df["date"].iloc[0])
-    return context_df, changed_from
+    calc_df["daily_return"] = calc_df["close"].pct_change()
+    calc_df["log_return"] = np.log(calc_df["close"] / calc_df["close"].shift(1))
+    rolling_std = calc_df["log_return"].rolling(window=window, min_periods=window).std()
+    calc_df["volatility_1y"] = rolling_std * (math.sqrt(252) if annualise else 1.0)
+
+    # Drop seed row if present
+    if calc_start > 0:
+        calc_df = calc_df.iloc[1:].reset_index(drop=True)
+
+    # Patch only recomputed tail rows back into original
+    patch_offset = recompute_start - calc_start
+    patch = calc_df.iloc[patch_offset:].reset_index(drop=True)
+    out.loc[recompute_start:, ["daily_return", "log_return", "volatility_1y"]] = \
+        patch[["daily_return", "log_return", "volatility_1y"]].to_numpy()
+
+    changed_from = _to_ts(out["date"].iloc[recompute_start])
+    return out, changed_from
 
 
 def _detect_split_or_bonus(symbol: str, sym_last: pd.Timestamp, lookback_days: int) -> bool:
