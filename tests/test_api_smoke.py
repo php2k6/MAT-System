@@ -30,6 +30,7 @@ from backend.routers.strategies import (
     StrategyActionRequest,
     deploy_strategy,
     force_rebalance_now,
+    mock_rebalance_preview,
     rebalance_history,
     trigger_eod_mtm,
     trigger_live_price_refresh,
@@ -59,6 +60,9 @@ class _FakeQuery:
     def scalar(self):
         return self._scalar
 
+    def delete(self, *args, **kwargs):
+        return 0
+
 
 class _FakeSession:
     def __init__(self, query_results):
@@ -67,6 +71,7 @@ class _FakeSession:
         self.refresh_called = False
         self.flush_called = False
         self.added = []
+        self.deleted = []
 
     def query(self, *args, **kwargs):
         if not self._query_results:
@@ -81,6 +86,9 @@ class _FakeSession:
 
     def add(self, obj):
         self.added.append(obj)
+
+    def delete(self, obj):
+        self.deleted.append(obj)
 
     def flush(self):
         self.flush_called = True
@@ -191,8 +199,11 @@ class TestApiContract(TestCase):
         self.assertLessEqual(len(data_5y), len(data_10y))
 
     def test_strategy_action_pause(self):
-        strategy = SimpleNamespace(status="active")
-        fake_db = _FakeSession([_FakeQuery(first_result=strategy)])
+        strategy = SimpleNamespace(strat_id=uuid4(), status="active")
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=strategy),
+            _FakeQuery(),
+        ])
 
         body = strategy_action(
             req=StrategyActionRequest(action="pause"),
@@ -206,13 +217,31 @@ class TestApiContract(TestCase):
         self.assertTrue(fake_db.commit_called)
         self.assertTrue(fake_db.refresh_called)
 
+    def test_strategy_action_stop_deletes_strategy(self):
+        strategy = SimpleNamespace(strat_id=uuid4(), status="active")
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=strategy),
+        ])
+
+        body = strategy_action(
+            req=StrategyActionRequest(action="stop"),
+            db=fake_db,
+            user=self.user,
+        )
+
+        self.assertTrue(body["success"])
+        self.assertEqual(body["status"], "stopped")
+        self.assertEqual(body["strategyDeleted"], True)
+        self.assertEqual(len(fake_db.deleted), 1)
+        self.assertIs(fake_db.deleted[0], strategy)
+        self.assertTrue(fake_db.commit_called)
+
     def test_deploy_strategy_maps_parameters_and_prechecks_funds(self):
         broker_session = SimpleNamespace(id=uuid4())
-        existing_strategy = SimpleNamespace(status="active")
 
         fake_db = _FakeSession([
             _FakeQuery(first_result=broker_session),
-            _FakeQuery(all_result=[existing_strategy]),
+            _FakeQuery(first_result=None),
         ])
 
         req = DeployStrategyRequest(
@@ -232,7 +261,6 @@ class TestApiContract(TestCase):
 
         self.assertTrue(body["success"])
         self.assertEqual(body["status"], "active")
-        self.assertEqual(existing_strategy.status, "stopped")
         self.assertTrue(fake_db.commit_called)
         self.assertTrue(fake_db.refresh_called)
         self.assertEqual(len(fake_db.added), 1)
@@ -250,6 +278,34 @@ class TestApiContract(TestCase):
         self.assertEqual(new_strategy.status, "active")
         self.assertEqual(new_strategy.start_date, date.today() + timedelta(days=1))
         self.assertEqual(new_strategy.next_rebalance_date, date.today() + timedelta(days=1))
+
+    def test_deploy_strategy_rejects_when_live_strategy_exists(self):
+        broker_session = SimpleNamespace(id=uuid4())
+        live_strategy = SimpleNamespace(strat_id=uuid4(), status="active")
+
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=broker_session),
+            _FakeQuery(first_result=live_strategy),
+        ])
+
+        req = DeployStrategyRequest(
+            universe="nifty50",
+            numStocks=10,
+            lookback1=6,
+            lookback2=12,
+            priceCap=None,
+            capital=500000,
+            rebalanceType="monthly",
+            rebalanceFreq=1,
+            startingDate=date.today() + timedelta(days=1),
+        )
+
+        with patch("backend.routers.strategies._get_available_balance", return_value=500000.0):
+            with self.assertRaises(HTTPException) as ctx:
+                deploy_strategy(req=req, db=fake_db, user=self.user)
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("already deployed", ctx.exception.detail["message"])
 
     def test_deploy_strategy_rejects_balance_mismatch(self):
         broker_session = SimpleNamespace(id=uuid4())
@@ -371,6 +427,50 @@ class TestApiContract(TestCase):
 
         self.assertTrue(a["success"])
         self.assertTrue(b["success"])
+
+    def test_mock_rebalance_preview_returns_dry_run_orders(self):
+        strategy = SimpleNamespace(
+            strat_id=uuid4(),
+            status="active",
+            n_stocks=2,
+            universe=50,
+            lb_period_1=6,
+            lb_period_2=12,
+            price_cap=None,
+        )
+        fake_db = _FakeSession([
+            _FakeQuery(first_result=strategy),
+            _FakeQuery(first_result=None),
+        ])
+
+        fake_engine = SimpleNamespace(
+            _get_fyers=lambda: object(),
+            _get_cash=lambda _f: 100000.0,
+            _load_db_holdings=lambda: {"AAA": {"qty": 10, "avg_price": 100.0}},
+            _compute_momentum=lambda _s: (
+                {"AAA": 1.5, "BBB": 1.2, "CCC": 1.0},
+                {"AAA": 100.0, "BBB": 200.0, "CCC": 300.0},
+            ),
+            _get_quotes=lambda _f, _t: {
+                "AAA": {"ltp": 105.0, "upper_limit": 120.0, "lower_limit": 80.0, "ask_qty": 10, "bid_qty": 10},
+                "BBB": {"ltp": 210.0, "upper_limit": 240.0, "lower_limit": 160.0, "ask_qty": 10, "bid_qty": 10},
+                "CCC": {"ltp": 290.0, "upper_limit": 330.0, "lower_limit": 250.0, "ask_qty": 10, "bid_qty": 10},
+            },
+            _is_uc=lambda _q: False,
+            _is_lc=lambda _q: False,
+        )
+
+        with patch("backend.routers.strategies.settings.enable_testing_endpoints", True), patch(
+            "backend.routers.strategies.MATEngine", return_value=fake_engine
+        ):
+            body = mock_rebalance_preview(db=fake_db, user=self.user)
+
+        self.assertTrue(body["success"])
+        self.assertTrue(body["dryRun"])
+        self.assertFalse(body["ordersPunched"])
+        self.assertIn("targetPortfolio", body)
+        self.assertIn("simulatedOrders", body)
+        self.assertGreaterEqual(len(body["targetPortfolio"]), 1)
 
 
 if __name__ == "__main__":

@@ -27,21 +27,17 @@ def _num(v) -> float:
 
 
 def _pick_user_strategy(db: Session, user_id):
-    """Pick active strategy first; otherwise latest strategy for this user."""
-    active = (
+    """Pick currently deployed strategy (active/paused), newest first."""
+    deployed = (
         db.query(Strategy)
-        .filter(Strategy.user_id == user_id, Strategy.status == "active")
-        .order_by(Strategy.start_date.desc())
+        .filter(
+            Strategy.user_id == user_id,
+            Strategy.status.in_(["active", "paused"]),
+        )
+        .order_by(Strategy.start_date.desc(), Strategy.next_rebalance_date.desc())
         .first()
     )
-    if active:
-        return active
-    return (
-        db.query(Strategy)
-        .filter(Strategy.user_id == user_id)
-        .order_by(Strategy.start_date.desc())
-        .first()
-    )
+    return deployed
 
 
 @router.get("")
@@ -139,8 +135,11 @@ def get_portfolio(
 
     cash = _num(strategy.unused_capital)
     current_value = round(live_equity + cash, 2) if used_live_price else _num(strategy.market_value)
-    pnl = current_value - invested_total
-    pnl_pct = (pnl / invested_total * 100) if invested_total > 0 else 0.0
+    # Strategy-level PnL should be measured against deployed capital, not
+    # current holdings cost, so closed positions are reflected correctly.
+    baseline_capital = _num(strategy.capital)
+    pnl = current_value - baseline_capital
+    pnl_pct = (pnl / baseline_capital * 100) if baseline_capital > 0 else 0.0
 
     last_done = (
         db.query(RebalanceQueue)
