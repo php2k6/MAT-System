@@ -158,25 +158,13 @@ function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauth
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const fmt = (n) => "₹" + Number(n).toLocaleString("en-IN");
-
-// ✅ Holdings-specific: up to 2 decimal places
-const fmt2 = (n) => {
-  const num = Number(n);
-  if (!Number.isFinite(num)) return "₹0";
-  const abs = Math.abs(num).toLocaleString("en-IN", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
-  return `${num < 0 ? "-" : ""}₹${abs}`;
-};
-
-const num2 = (n) => {
-  const num = Number(n);
-  if (!Number.isFinite(num)) return "0";
-  return num.toLocaleString("en-IN", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
+const fmtCompact = (n) => {
+  const abs  = Math.abs(n);
+  const sign = n < 0 ? "-" : "";
+  if (abs >= 10000000) return sign + "₹" + (abs / 10000000).toFixed(2) + "Cr";
+  if (abs >= 100000)   return sign + "₹" + (abs / 100000).toFixed(2) + "L";
+  if (abs >= 1000)     return sign + "₹" + (abs / 1000).toFixed(1) + "K";
+  return sign + "₹" + abs;
 };
 
 // ─── STATUS CONFIG ────────────────────────────────────────────────────────────
@@ -879,13 +867,9 @@ export default function Dashboard() {
   const { user, summary, holdings, strategyDeployed, strategy } = portfolio;
   const pnlPos = (summary?.pnl ?? 0) >= 0;
 
-  // ✅ Day-zero only when strategy is ACTIVE and no holdings exist yet
-  const holdingsCount = Array.isArray(holdings) ? holdings.length : 0;
-  const isDayZero = Boolean(
-    strategyDeployed &&
-    strategy?.status === "active" &&
-    holdingsCount === 0
-  );
+  // ─── [NEW] Day-zero detection ─────────────────────────────────────────────
+  // True when strategy is deployed but no trades have happened yet.
+  const isDayZero = strategyDeployed && (holdings?.length === 0) && (summary?.invested === 0);
 
   return (
     <>
@@ -1169,19 +1153,17 @@ export default function Dashboard() {
                                   <div className="db-sym">{h.symbol}</div>
                                   {h.name && <div className="db-sym-name">{h.name}</div>}
                                 </td>
-                                <td>{num2(h.qty)}</td>
-                                <td>{fmt2(h.avgPrice)}</td>
-                                <td
-                                  style={{ color: "#111", fontWeight: 600 }}
-                                  key={`ltp-${h.symbol}-${h.priceTs}`}
-                                  className={h.priceSource === "live" ? "ltp-flash" : ""}
-                                >
-                                  {fmt2(h.ltp)}
+                                <td>{h.qty}</td>
+                                <td>{fmt(h.avgPrice)}</td>
+                                <td style={{ color: "#111", fontWeight: 600 }}
+                                    key={`ltp-${h.symbol}-${h.priceTs}`}
+                                    className={h.priceSource === "live" ? "ltp-flash" : ""}>
+                                  {fmt(h.ltp)}
                                 </td>
-                                <td>{fmt2(h.value)}</td>
+                                <td>{fmtCompact(h.value)}</td>
                                 <td>
                                   <span className={pos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
-                                    {pos ? "+" : ""}{fmt2(h.pnl)}
+                                    {pos ? "+" : ""}{fmtCompact(h.pnl)}
                                   </span>
                                   <div className={`db-pnl-pct ${pos ? "pos-text" : "neg-text"}`}>
                                     {pos ? "▲" : "▼"} {Math.abs(h.pnlPct).toFixed(2)}%
