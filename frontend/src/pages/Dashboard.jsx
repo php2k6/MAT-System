@@ -17,24 +17,16 @@ const MONO = `'Courier New', Courier, monospace`;
 
 // ─── API SERVICE LAYER ────────────────────────────────────────────────────────
 const api = {
-  /**
-   * GET /portfolio
-   * Auth via session cookie (credentials: "include")
-   */
   getPortfolio: async () => {
     const res = await fetch(`${API_BASE_URL}/portfolio`, {
       method: "GET",
-      credentials: "include",          // sends session cookie
+      credentials: "include",
     });
     if (res.status === 401) throw new Error("UNAUTHORIZED");
     if (!res.ok) throw new Error(`Portfolio fetch failed: ${res.status}`);
     return res.json();
   },
 
-  /**
-   * GET /portfolio/chart?range=1M
-   * Auth via session cookie
-   */
   getChartData: async (range = "1M") => {
     const res = await fetch(
       `${API_BASE_URL}/portfolio/chart?range=${encodeURIComponent(range)}`,
@@ -46,14 +38,9 @@ const api = {
       throw new Error(body?.detail?.message || "Invalid range");
     }
     if (!res.ok) throw new Error(`Chart fetch failed: ${res.status}`);
-    return res.json(); // [{ date, value }, ...]
+    return res.json();
   },
 
-  /**
-   * POST /strategy/action
-   * Body: { action: "pause" | "stop" | "resume" | "restart" }
-   * Adjust the path to match your actual backend endpoint.
-   */
   postAction: async (action) => {
     const res = await fetch(`${API_BASE_URL}/strategy/action`, {
       method: "POST",
@@ -68,29 +55,15 @@ const api = {
 };
 
 // ─── WEBSOCKET HOOK ───────────────────────────────────────────────────────────
-/**
- * Connects to /live/ws via WebSocket.
- * Session cookie is sent automatically (same-origin or cookie-forwarding).
- *
- * Handles:
- *   { type: "error",           message: "Unauthorized" }   → closes with 4401
- *   { type: "status",          message: "NO_STRATEGY" }    → no-op / periodic ping
- *   { type: "holdings_update", timestamp, items: [{symbol, ltp, ts}] }
- *   { type: "summary_update",  timestamp, summary: {currentValue, cash, equity} }
- *
- * onHoldingsUpdate(items)  — called with changed symbols only
- * onSummaryUpdate(summary) — called with updated summary fields
- * onUnauthorized()         — called when server closes with 4401
- */
 function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauthorized }) {
   const wsRef          = useRef(null);
   const reconnectTimer = useRef(null);
   const unmounted      = useRef(false);
-  const [wsStatus, setWsStatus] = useState("disconnected"); // "connecting" | "live" | "disconnected" | "no_strategy"
+  const [wsStatus, setWsStatus] = useState("disconnected");
 
   const connect = useCallback(() => {
     if (!enabled || unmounted.current) return;
-    if (wsRef.current && wsRef.current.readyState < 2) return; // already open/connecting
+    if (wsRef.current && wsRef.current.readyState < 2) return;
 
     setWsStatus("connecting");
     const ws = new WebSocket(`${WS_BASE_URL}/live/ws`);
@@ -111,27 +84,21 @@ function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauth
             onHoldingsUpdate(msg.items);
           }
           break;
-
         case "summary_update":
           if (msg.summary) {
             onSummaryUpdate(msg.summary);
           }
           break;
-
         case "status":
-          // "NO_STRATEGY" — nothing to update live, just mark status
           if (msg.message === "NO_STRATEGY") {
             setWsStatus("no_strategy");
           }
           break;
-
         case "error":
-          // Server will close socket after this
           if (msg.message === "Unauthorized") {
             onUnauthorized();
           }
           break;
-
         default:
           break;
       }
@@ -143,17 +110,12 @@ function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauth
 
     ws.onclose = (event) => {
       if (unmounted.current) return;
-
-      // 4401 = unauthorized — don't reconnect
       if (event.code === 4401) {
         setWsStatus("disconnected");
         onUnauthorized();
         return;
       }
-
       setWsStatus("disconnected");
-
-      // Auto-reconnect after 4 s
       reconnectTimer.current = setTimeout(() => {
         if (!unmounted.current) connect();
       }, 4000);
@@ -168,7 +130,7 @@ function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauth
       unmounted.current = true;
       clearTimeout(reconnectTimer.current);
       if (wsRef.current) {
-        wsRef.current.onclose = null; // prevent reconnect on unmount
+        wsRef.current.onclose = null;
         wsRef.current.close();
       }
     };
@@ -553,16 +515,58 @@ function PriceSourceBadge({ source }) {
   );
 }
 
-// OfflineScreen lives at /offline (Offline.jsx) — Dashboard redirects there after retries.
+// ─── [NEW] DAY-ZERO BANNER ────────────────────────────────────────────────────
+// Shown when strategy is deployed but no trades have been placed yet.
+// Purely additive — rendered only when holdings.length === 0 && invested === 0.
+function DayZeroBanner({ nextRebalance }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "flex-start", gap: 12,
+      background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8,
+      padding: "14px 18px", marginBottom: 24, fontFamily: SYS,
+    }}>
+      <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>🕐</span>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af", marginBottom: 4 }}>
+          Awaiting First Trade
+        </div>
+        <div style={{ fontSize: 12, color: "#3b5bdb", lineHeight: 1.65 }}>
+          Your strategy is live and configured. Holdings and portfolio value will appear here after
+          the first rebalance{nextRebalance ? ` on <strong>${nextRebalance}</strong>` : ""}.
+          No action is needed from your side.
+        </div>
+        {nextRebalance && (
+          <div style={{ marginTop: 8, fontSize: 11, color: "#1d4ed8", fontWeight: 600 }}>
+            First rebalance scheduled: {nextRebalance}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── [NEW] HOLDINGS EMPTY STATE ───────────────────────────────────────────────
+// Rendered inside <tbody> when holdings array is empty.
+function HoldingsEmptyRow() {
+  return (
+    <tr>
+      <td colSpan={7} style={{
+        padding: "36px 20px", textAlign: "center",
+        fontFamily: SYS, color: "#aaa", fontSize: 13,
+      }}>
+        No holdings yet — positions will appear after the first rebalance.
+      </td>
+    </tr>
+  );
+}
 
 // ─── MAIN DASHBOARD ───────────────────────────────────────────────────────────
 const MAX_AUTO_RETRIES = 2;
-const RETRY_DELAY_MS   = 1000; // 3 s between auto-retries
+const RETRY_DELAY_MS   = 1000;
 
 export default function Dashboard() {
   const navigate = useNavigate();
 
-  // ── Core state ──
   const [portfolio,     setPortfolio]     = useState(null);
   const [chartData,     setChartData]     = useState([]);
   const [view,          setView]          = useState(null);
@@ -574,20 +578,16 @@ export default function Dashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error,         setError]         = useState(null);
 
-  // ── Offline / retry state ──
   const [offline,       setOffline]       = useState(false);
   const [retrying,      setRetrying]      = useState(false);
   const [retryAttempt,  setRetryAttempt]  = useState(0);
   const retryTimer = useRef(null);
 
-  // ── Flash state for live-updated cards ──
   const [flashValue, setFlashValue] = useState(false);
 
-  // ── Core fetch function ──
   const fetchPortfolio = useCallback(async () => {
     try {
       const data = await api.getPortfolio();
-      // Success — clear offline state
       setPortfolio(data);
       setOffline(false);
       setRetrying(false);
@@ -599,17 +599,14 @@ export default function Dashboard() {
         navigate("/login");
         return;
       }
-      // Network / server error
       setLoading(false);
       setOffline(true);
       setRetrying(false);
     }
   }, [navigate]);
 
-  // ── Auto-retry scheduler: fires up to MAX_AUTO_RETRIES times, then redirects ──
   const scheduleAutoRetry = useCallback((attempt) => {
     if (attempt >= MAX_AUTO_RETRIES) {
-      // All retries exhausted — redirect to offline/maintenance page
       navigate("/offline");
       return;
     }
@@ -633,21 +630,17 @@ export default function Dashboard() {
     }, RETRY_DELAY_MS);
   }, [navigate]);
 
-  // ── Initial fetch on mount ──
   useEffect(() => {
     fetchPortfolio().then(() => {}).catch(() => {});
     return () => clearTimeout(retryTimer.current);
   }, []);
 
-  // ── When offline is set, kick off auto-retry sequence ──
   useEffect(() => {
     if (!offline) return;
     scheduleAutoRetry(retryAttempt);
     return () => clearTimeout(retryTimer.current);
   }, [offline]);
 
-  // ── Manual retry — not used here (redirect happens after auto-retries) ──
-  // Kept as a ref in case child components need it in future.
   const handleManualRetry = useCallback(() => {
     clearTimeout(retryTimer.current);
     setRetryAttempt(0);
@@ -655,7 +648,6 @@ export default function Dashboard() {
     fetchPortfolio();
   }, [fetchPortfolio]);
 
-  // ── Fetch chart when panel opens or range changes ──
   useEffect(() => {
     if (view !== "chart") return;
     setChartLoading(true);
@@ -668,9 +660,7 @@ export default function Dashboard() {
       });
   }, [view, range]);
 
-  // ── WebSocket: live holdings + summary updates ──
   const handleHoldingsUpdate = useCallback((items) => {
-    // items = [{ symbol, ltp, ts }, ...]  — only changed symbols
     setPortfolio(prev => {
       if (!prev?.holdings) return prev;
       const updatedHoldings = prev.holdings.map(h => {
@@ -687,7 +677,6 @@ export default function Dashboard() {
   }, []);
 
   const handleSummaryUpdate = useCallback((summary) => {
-    // summary = { currentValue, cash, equity }
     setPortfolio(prev => {
       if (!prev?.summary) return prev;
       const newCurrentValue = summary.currentValue ?? prev.summary.currentValue;
@@ -708,8 +697,6 @@ export default function Dashboard() {
         },
       };
     });
-
-    // Brief green flash on the value cards
     setFlashValue(true);
     setTimeout(() => setFlashValue(false), 700);
   }, []);
@@ -727,10 +714,8 @@ export default function Dashboard() {
     onUnauthorized:   handleUnauthorized,
   });
 
-  // ── Toggle views ──
   const handleViewToggle = v => setView(prev => prev === v ? null : v);
 
-  // ── Strategy actions ──
   async function handleConfirm() {
     const action = confirmAction;
     setConfirmAction(null);
@@ -765,7 +750,6 @@ export default function Dashboard() {
     }
   }
 
-  // ── Loading screen ──
   if (loading) return (
     <div style={{
       minHeight: "calc(100vh - 56px)", background: "#f2f2f2",
@@ -775,9 +759,6 @@ export default function Dashboard() {
     </div>
   );
 
-  // Note: offline state triggers navigate("/offline") after MAX_AUTO_RETRIES — no local render needed.
-
-  // Guard: portfolio is null while auto-retries are in-flight (loading=false but no data yet)
   if (!portfolio) return (
     <div style={{
       minHeight: "calc(100vh - 56px)", background: "#f2f2f2",
@@ -789,6 +770,10 @@ export default function Dashboard() {
 
   const { user, summary, holdings, strategyDeployed, strategy } = portfolio;
   const pnlPos = (summary?.pnl ?? 0) >= 0;
+
+  // ─── [NEW] Day-zero detection ─────────────────────────────────────────────
+  // True when strategy is deployed but no trades have happened yet.
+  const isDayZero = strategyDeployed && (holdings?.length === 0) && (summary?.invested === 0);
 
   return (
     <>
@@ -873,10 +858,8 @@ export default function Dashboard() {
       <div className="db-root">
         <div className={`db-wrap ${mounted ? "mounted" : ""}`}>
 
-          {/* ── Error banner ── */}
           {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
-          {/* ── Greeting + status badge ── */}
           <div style={{
             marginBottom: 22,
             display: "flex", alignItems: "flex-start",
@@ -894,13 +877,11 @@ export default function Dashboard() {
               <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 6, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11, color: "#999", fontFamily: SYS }}>Strategy</span>
                 <StatusBadge status={strategy.status} />
-                {/* Live WebSocket indicator */}
                 <WsStatusPill status={wsStatus} />
               </div>
             )}
           </div>
 
-          {/* ── Strategy gate ── */}
           {!strategyDeployed ? (
             <NoStrategy onDeploy={() => navigate("/deploy")} />
           ) : (
@@ -909,8 +890,14 @@ export default function Dashboard() {
                 <StrategyPanel strategy={strategy} onAction={setConfirmAction} />
               )}
 
+              {/* ── [NEW] Day-zero banner — shown only before first rebalance ── */}
+              {isDayZero && (
+                <DayZeroBanner nextRebalance={strategy?.nextRebalance} />
+              )}
+
               {/* ── Summary stat cards ── */}
-              {summary && (
+              {/* [NEW] Cards hidden on day-zero so ₹0/₹0/+₹0 is never shown */}
+              {summary && !isDayZero && (
                 <div className="db-summary">
                   <StatCard
                     label="Invested"
@@ -949,12 +936,15 @@ export default function Dashboard() {
 
               {/* ── Toggle buttons ── */}
               <div className="db-toggles">
-                <button
-                  className={`db-toggle ${view === "chart" ? "db-toggle-on" : "db-toggle-off"}`}
-                  onClick={() => handleViewToggle("chart")}
-                >
-                  <span>▲</span> Portfolio Chart
-                </button>
+                {/* [NEW] Chart toggle hidden on day-zero — no data to show */}
+                {!isDayZero && (
+                  <button
+                    className={`db-toggle ${view === "chart" ? "db-toggle-on" : "db-toggle-off"}`}
+                    onClick={() => handleViewToggle("chart")}
+                  >
+                    <span>▲</span> Portfolio Chart
+                  </button>
+                )}
                 <button
                   className={`db-toggle ${view === "holdings" ? "db-toggle-on" : "db-toggle-off"}`}
                   onClick={() => handleViewToggle("holdings")}
@@ -964,7 +954,7 @@ export default function Dashboard() {
               </div>
 
               {/* ── Chart panel ── */}
-              {view === "chart" && (
+              {view === "chart" && !isDayZero && (
                 <div className="db-panel" style={{ marginBottom: 20 }}>
                   <div className="db-panel-header">
                     <span className="db-panel-title">Portfolio Value</span>
@@ -1048,38 +1038,40 @@ export default function Dashboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {(holdings ?? []).map(h => {
-                          const pos    = h.pnl >= 0;
-                          const dayPos = h.dayChange >= 0;
-                          return (
-                            <tr key={h.symbol}>
-                              <td>
-                                <div className="db-sym">{h.symbol}</div>
-                                <div className="db-sym-name">{h.name}</div>
-                              </td>
-                              <td>{h.qty}</td>
-                              <td>{fmt(h.avgPrice)}</td>
-                              {/* LTP gets a flash class when WS updates it */}
-                              <td style={{ color: "#111", fontWeight: 600 }}
-                                  key={`ltp-${h.symbol}-${h.priceTs}`}
-                                  className={h.priceSource === "live" ? "ltp-flash" : ""}>
-                                {fmt(h.ltp)}
-                              </td>
-                              <td>{fmtCompact(h.value)}</td>
-                              <td>
-                                <span className={pos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
-                                  {pos ? "+" : ""}{fmtCompact(h.pnl)}
-                                </span>
-                                <div className={`db-pnl-pct ${pos ? "pos-text" : "neg-text"}`}>
-                                  {pos ? "▲" : "▼"} {Math.abs(h.pnlPct).toFixed(2)}%
-                                </div>
-                              </td>
-                              <td className={dayPos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
-                                {dayPos ? "+" : ""}{h.dayChange.toFixed(2)}%
-                              </td>
-                            </tr>
-                          );
-                        })}
+                        {(holdings ?? []).length === 0
+                          ? <HoldingsEmptyRow />  /* [NEW] empty state row */
+                          : (holdings ?? []).map(h => {
+                              const pos    = h.pnl >= 0;
+                              const dayPos = h.dayChange >= 0;
+                              return (
+                                <tr key={h.symbol}>
+                                  <td>
+                                    <div className="db-sym">{h.symbol}</div>
+                                    <div className="db-sym-name">{h.name}</div>
+                                  </td>
+                                  <td>{h.qty}</td>
+                                  <td>{fmt(h.avgPrice)}</td>
+                                  <td style={{ color: "#111", fontWeight: 600 }}
+                                      key={`ltp-${h.symbol}-${h.priceTs}`}
+                                      className={h.priceSource === "live" ? "ltp-flash" : ""}>
+                                    {fmt(h.ltp)}
+                                  </td>
+                                  <td>{fmtCompact(h.value)}</td>
+                                  <td>
+                                    <span className={pos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
+                                      {pos ? "+" : ""}{fmtCompact(h.pnl)}
+                                    </span>
+                                    <div className={`db-pnl-pct ${pos ? "pos-text" : "neg-text"}`}>
+                                      {pos ? "▲" : "▼"} {Math.abs(h.pnlPct).toFixed(2)}%
+                                    </div>
+                                  </td>
+                                  <td className={dayPos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
+                                    {dayPos ? "+" : ""}{h.dayChange.toFixed(2)}%
+                                  </td>
+                                </tr>
+                              );
+                            })
+                        }
                       </tbody>
                     </table>
                   </div>
