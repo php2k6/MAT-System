@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 import json
 import logging
 from pathlib import Path
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from backend.backtest_engine import build_series, build_stats, run_backtest
 from backend.core.deps import get_current_user
 from backend.core.security import decrypt_token
+from backend.core.time_utils import now_ist
 from backend.config import settings
 from backend.database import get_db
 from backend.models import BrokerSession, RebalanceQueue, StockPrice, Strategy, User
@@ -362,7 +363,7 @@ def force_rebalance_now(
             detail={"success": False, "message": "Rebalance already in progress for this strategy"},
         )
 
-    now = datetime.now(timezone.utc)
+    now = now_ist()
     entry = RebalanceQueue(
         strat_id=strategy.strat_id,
         user_id=user.user_id,
@@ -382,7 +383,7 @@ def force_rebalance_now(
             entry.retry_count = (entry.retry_count or 0) + 1
         elif result.success:
             entry.status = "done"
-            entry.completed_at = datetime.now(timezone.utc)
+            entry.completed_at = now_ist()
         else:
             entry.status = "failed"
             entry.reason = result.reason

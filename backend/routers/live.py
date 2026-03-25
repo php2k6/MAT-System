@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -15,6 +15,7 @@ from backend.core.deps import get_current_user
 from backend.core.live_prices import get_live_price_store
 from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decode_access_token, decrypt_token
+from backend.core.time_utils import now_ist
 from backend.database import SessionLocal
 from backend.models import BrokerSession, Holdings, Strategy, User
 
@@ -236,7 +237,7 @@ async def live_ws(websocket: WebSocket):
                     await websocket.send_json(
                         {
                             "type": "holdings_update",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": now_ist().isoformat(),
                             "items": items,
                         }
                     )
@@ -264,7 +265,7 @@ async def live_ws(websocket: WebSocket):
                     await websocket.send_json(
                         {
                             "type": "summary_update",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": now_ist().isoformat(),
                             "summary": {
                                 "invested": round(invested, 2),
                                 "currentValue": round(total_value, 2),

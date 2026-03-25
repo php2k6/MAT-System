@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from uuid import UUID
 import logging
 
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.core.deps import get_current_user
 from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import encrypt_token
+from backend.core.time_utils import now_ist
 from backend.database import get_db
 from backend.models import BrokerSession, StockTicker, User, UserBrokerLink
 from backend.config import settings
@@ -165,13 +166,13 @@ def broker_callback(
         link = db.query(UserBrokerLink).filter(UserBrokerLink.user_id == user_id).first()
         if link:
             link.is_linked  = True
-            link.linked_at  = datetime.now(timezone.utc)
+            link.linked_at  = now_ist()
         else:
             db.add(UserBrokerLink(
                 user_id=user_id,
                 fyers_client_id=settings.fyers_app_id,
                 is_linked=True,
-                linked_at=datetime.now(timezone.utc),
+                linked_at=now_ist(),
             ))
 
         db.commit()

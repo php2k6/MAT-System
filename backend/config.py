@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_dir: str = "logs"
     log_file_name: str = "backend.log"
+    rebalance_log_file_name: str = "rebalancing.log"
     log_max_bytes: int = 5 * 1024 * 1024
     log_backup_count: int = 5
 

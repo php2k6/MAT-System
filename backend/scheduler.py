@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
@@ -28,6 +28,7 @@ from backend.config import settings
 from backend.core.live_prices import get_live_price_store
 from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decrypt_token
+from backend.core.time_utils import now_ist
 from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
 from backend.database import SessionLocal
 from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, StockTicker, Strategy
@@ -387,7 +388,7 @@ def queue_rebalances() -> None:
                 strat_id=strat.strat_id,
                 user_id=strat.user_id,
                 status="pending",
-                queued_at=datetime.now(timezone.utc),
+                queued_at=now_ist(),
             )
             db.add(entry)
 
@@ -422,7 +423,7 @@ def drain_rebalance_queue() -> None:
     from backend.mat_engine import MATEngine   # lazy import avoids circular
 
     db  = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = now_ist()
     try:
         pending = (
             db.query(RebalanceQueue)
@@ -432,6 +433,12 @@ def drain_rebalance_queue() -> None:
 
         for entry in pending:
             entry_id = entry.id   # save before any potential rollback
+            logger.info(
+                "drain_rebalance_queue: triggered entry=%s strat=%s user=%s",
+                entry_id,
+                entry.strat_id,
+                entry.user_id,
+            )
 
             # Mark in-progress and commit so other workers don't double-pick
             entry.status       = "in_progress"
@@ -448,12 +455,23 @@ def drain_rebalance_queue() -> None:
                         + (" | " + json.dumps(result.details) if result.details else "")
                     )
                     entry.retry_count = (entry.retry_count or 0) + 1
+                    logger.info(
+                        "drain_rebalance_queue: skipped entry=%s reason=%s",
+                        entry_id,
+                        result.reason,
+                    )
                 elif result.success:
                     entry.status       = "done"
-                    entry.completed_at = datetime.now(timezone.utc)
+                    entry.completed_at = now_ist()
+                    logger.info("drain_rebalance_queue: done entry=%s", entry_id)
                 else:
                     entry.status = "failed"
                     entry.reason = result.reason
+                    logger.warning(
+                        "drain_rebalance_queue: failed entry=%s reason=%s",
+                        entry_id,
+                        result.reason,
+                    )
 
                 db.commit()
 

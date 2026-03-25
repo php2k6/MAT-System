@@ -3,12 +3,15 @@ from __future__ import annotations
 import contextvars
 import logging
 import logging.handlers
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from backend.config import settings
 
 
 _request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+_IST = ZoneInfo(settings.scheduler_timezone)
 
 
 def set_request_id(request_id: str) -> None:
@@ -23,6 +26,18 @@ class RequestIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = _request_id_ctx.get()
         return True
+
+
+class RootNoiseFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Keep backend.log concise: suppress verbose rebalance engine chatter.
+        if record.name.startswith("backend.mat_engine") and record.levelno < logging.WARNING:
+            return False
+        return True
+
+
+def _ist_converter(timestamp: float):
+    return datetime.fromtimestamp(timestamp, tz=_IST).timetuple()
 
 
 def configure_logging() -> None:
@@ -44,12 +59,15 @@ def configure_logging() -> None:
         "%(message)s"
     )
     formatter = logging.Formatter(fmt=fmt, datefmt="%Y-%m-%d %H:%M:%S")
+    formatter.converter = _ist_converter
     req_filter = RequestIdFilter()
+    noise_filter = RootNoiseFilter()
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
     console_handler.addFilter(req_filter)
+    console_handler.addFilter(noise_filter)
 
     file_handler = logging.handlers.RotatingFileHandler(
         filename=log_file,
@@ -60,10 +78,29 @@ def configure_logging() -> None:
     file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(req_filter)
+    file_handler.addFilter(noise_filter)
 
     root.handlers.clear()
     root.addHandler(console_handler)
     root.addHandler(file_handler)
+
+    # Dedicated rebalance execution history log (kept separate from backend.log).
+    rebalance_log_file = log_dir / settings.rebalance_log_file_name
+    rebalance_handler = logging.handlers.RotatingFileHandler(
+        filename=rebalance_log_file,
+        maxBytes=int(settings.log_max_bytes),
+        backupCount=int(settings.log_backup_count),
+        encoding="utf-8",
+    )
+    rebalance_handler.setLevel(level)
+    rebalance_handler.setFormatter(formatter)
+    rebalance_handler.addFilter(req_filter)
+
+    rebalance_logger = logging.getLogger("backend.rebalance")
+    rebalance_logger.handlers.clear()
+    rebalance_logger.setLevel(level)
+    rebalance_logger.propagate = False
+    rebalance_logger.addHandler(rebalance_handler)
 
     # Uvicorn loggers should propagate into the configured root handlers.
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
@@ -77,4 +114,7 @@ def configure_logging() -> None:
     root._mat_logging_configured = True  # type: ignore[attr-defined]
     logging.getLogger(__name__).info(
         "Logging configured level=%s file=%s", level_name, str(log_file)
+    )
+    logging.getLogger(__name__).info(
+        "Rebalance logging configured file=%s", str(rebalance_log_file)
     )
