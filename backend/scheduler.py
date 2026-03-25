@@ -23,6 +23,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
 
 from backend.config import settings
 from backend.core.live_prices import get_live_price_store
@@ -487,11 +488,22 @@ def drain_rebalance_queue() -> None:
     db  = SessionLocal()
     now = now_ist()
     try:
-        pending = (
-            db.query(RebalanceQueue)
-            .filter(RebalanceQueue.status == "pending")
-            .all()
-        )
+        try:
+            pending = (
+                db.query(RebalanceQueue)
+                .filter(RebalanceQueue.status == "pending")
+                .all()
+            )
+        except OperationalError:
+            logger.warning("drain_rebalance_queue: pending query failed due DB connection issue; retrying once")
+            db.rollback()
+            db.close()
+            db = SessionLocal()
+            pending = (
+                db.query(RebalanceQueue)
+                .filter(RebalanceQueue.status == "pending")
+                .all()
+            )
 
         for entry in pending:
             entry_id = entry.id   # save before any potential rollback
