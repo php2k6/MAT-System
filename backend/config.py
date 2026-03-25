@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     eod_mtm_hour_ist: int = 15
     eod_mtm_minute_ist: int = 40
 
+    # Broker reconciliation snapshots (IST)
+    # Runs a full holdings + cash sync from Fyers and updates strategy/portfolio.
+    reconcile_open_hour_ist: int = 9
+    reconcile_open_minute_ist: int = 20
+
     # Yahoo daily DB sync
     enable_yahoo_daily_sync: bool = False
     yahoo_daily_sync_hour_ist: int = 19

@@ -5,6 +5,7 @@ import logging
 from datetime import date
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fyers_apiv3 import fyersModel
@@ -19,6 +20,18 @@ from backend.models import BrokerSession, Holdings, Strategy, User
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 logger = logging.getLogger(__name__)
+_IST = ZoneInfo(settings.scheduler_timezone)
+
+
+def _is_market_hours() -> bool:
+    now_ist = datetime.now(_IST)
+    if now_ist.weekday() >= 5:
+        return False
+
+    minutes = now_ist.hour * 60 + now_ist.minute
+    market_open = int(settings.market_open_hour_ist) * 60 + int(settings.market_open_minute_ist)
+    market_close = int(settings.market_close_hour_ist) * 60 + int(settings.market_close_minute_ist)
+    return market_open <= minutes <= market_close
 
 
 def _ensure_testing_enabled() -> None:
@@ -196,7 +209,8 @@ async def live_ws(websocket: WebSocket):
                     .all()
                 )
                 tickers = [h.ticker for h in holdings if h.qty and h.qty > 0]
-                live_map = store.get_prices(tickers)
+                use_live_prices = _is_market_hours()
+                live_map = store.get_prices(tickers) if use_live_prices else {}
 
                 items = []
                 equity = 0.0
@@ -205,7 +219,7 @@ async def live_ws(websocket: WebSocket):
                     if qty <= 0:
                         continue
                     live = live_map.get(row.ticker)
-                    if live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
+                    if use_live_prices and live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
                         ltp = float(live["ltp"])
                         ts = int(live.get("ts") or 0)
                     else:
@@ -227,7 +241,7 @@ async def live_ws(websocket: WebSocket):
                         }
                     )
 
-                fyers_summary = _fetch_fyers_summary_for_user(db, user.user_id)
+                fyers_summary = _fetch_fyers_summary_for_user(db, user.user_id) if use_live_prices else None
                 if fyers_summary:
                     invested = float(fyers_summary["invested"])
                     cash = float(fyers_summary["cash"])

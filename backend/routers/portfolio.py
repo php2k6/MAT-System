@@ -1,6 +1,7 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import logging
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fyers_apiv3 import fyersModel
@@ -16,6 +17,7 @@ from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, S
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 logger = logging.getLogger(__name__)
+_IST = ZoneInfo(settings.scheduler_timezone)
 
 
 UNIVERSE_LABELS = {
@@ -28,6 +30,17 @@ UNIVERSE_LABELS = {
 
 def _num(v) -> float:
     return float(v or 0)
+
+
+def _is_market_hours() -> bool:
+    now_ist = datetime.now(_IST)
+    if now_ist.weekday() >= 5:
+        return False
+
+    minutes = now_ist.hour * 60 + now_ist.minute
+    market_open = int(settings.market_open_hour_ist) * 60 + int(settings.market_open_minute_ist)
+    market_close = int(settings.market_close_hour_ist) * 60 + int(settings.market_close_minute_ist)
+    return market_open <= minutes <= market_close
 
 
 def _extract_available_cash(funds_resp: dict) -> float | None:
@@ -185,20 +198,25 @@ def get_portfolio(
     live_equity = 0.0
     used_live_price = False
     store = get_live_price_store()
-    live_prices = store.get_prices([h.ticker for h in holding_rows]) if holding_rows else {}
+    use_live_prices = _is_market_hours()
+    live_prices = store.get_prices([h.ticker for h in holding_rows]) if (holding_rows and use_live_prices) else {}
 
     for h in holding_rows:
         qty = int(h.qty or 0)
         avg_price = _num(h.avg_price)
         live = live_prices.get(h.ticker)
-        if live and not live.get("is_stale") and _num(live.get("ltp")) > 0:
+        if use_live_prices and live and not live.get("is_stale") and _num(live.get("ltp")) > 0:
             ltp = _num(live.get("ltp"))
             price_source = "live"
             price_ts = int(live.get("ts") or 0)
             used_live_price = True
         else:
-            ltp = prices_by_ticker.get(h.ticker, {}).get("ltp", _num(h.last_price))
-            price_source = "snapshot"
+            if use_live_prices:
+                ltp = prices_by_ticker.get(h.ticker, {}).get("ltp", _num(h.last_price))
+                price_source = "snapshot"
+            else:
+                ltp = _num(h.last_price) or prices_by_ticker.get(h.ticker, {}).get("ltp", 0.0)
+                price_source = "db-holdings"
             price_ts = None
 
         value = qty * ltp
@@ -227,7 +245,7 @@ def get_portfolio(
             }
         )
 
-    fyers_summary = _fetch_fyers_summary(db, user.user_id)
+    fyers_summary = _fetch_fyers_summary(db, user.user_id) if use_live_prices else None
     if fyers_summary:
         invested_summary = _num(fyers_summary["invested"])
         cash = _num(fyers_summary["cash"])
