@@ -26,6 +26,7 @@ class User(Base):
     user_broker_link = relationship("UserBrokerLink", back_populates="user", uselist=False, cascade="all, delete-orphan")
     strategies       = relationship("Strategy",       back_populates="user", cascade="all, delete-orphan")
     rebalance_queues = relationship("RebalanceQueue",  back_populates="user", cascade="all, delete-orphan")
+    rebalancing_history = relationship("RebalancingHistory", back_populates="user", cascade="all, delete-orphan")
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,7 @@ class Strategy(Base):
     portfolio         = relationship("Portfolio",      back_populates="strategy",        cascade="all, delete-orphan")
     holdings          = relationship("Holdings",       back_populates="strategy",        cascade="all, delete-orphan")
     rebalance_history = relationship("RebalanceQueue", back_populates="strategy",        cascade="all, delete-orphan", order_by="RebalanceQueue.queued_at.desc()")
+    rebalancing_runs  = relationship("RebalancingHistory", back_populates="strategy", cascade="all, delete-orphan", order_by="RebalancingHistory.started_at.desc()")
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +164,38 @@ class RebalanceQueue(Base):
 
     strategy = relationship("Strategy",       back_populates="rebalance_history")
     user     = relationship("User",           back_populates="rebalance_queues")
+    history_runs = relationship("RebalancingHistory", back_populates="queue_entry", cascade="all, delete-orphan")
+
+
+# ---------------------------------------------------------------------------
+# Rebalancing History (one row per rebalance execution attempt)
+# ---------------------------------------------------------------------------
+class RebalancingHistory(Base):
+    __tablename__ = "rebalancing_history"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    strat_id      = Column(UUID(as_uuid=True), ForeignKey("strategies.strat_id", ondelete="CASCADE"), nullable=False)
+    queue_id      = Column(UUID(as_uuid=True), ForeignKey("rebalance_queue.id", ondelete="SET NULL"), nullable=True)
+    user_id       = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    status        = Column(VARCHAR(20), nullable=False, default="failed")
+    reason        = Column(Text, nullable=True)
+
+    started_at    = Column(TIMESTAMP, nullable=False, server_default=func.now())
+    completed_at  = Column(TIMESTAMP, nullable=True)
+
+    pre_cash      = Column(Numeric(20, 8), nullable=True)
+    post_cash     = Column(Numeric(20, 8), nullable=True)
+    pre_total     = Column(Numeric(20, 8), nullable=True)
+    post_total    = Column(Numeric(20, 8), nullable=True)
+
+    pre_holdings_json   = Column(Text, nullable=True)
+    post_holdings_json  = Column(Text, nullable=True)
+    orders_json         = Column(Text, nullable=True)
+    summary_json        = Column(Text, nullable=True)
+
+    strategy   = relationship("Strategy", back_populates="rebalancing_runs")
+    queue_entry = relationship("RebalanceQueue", back_populates="history_runs")
+    user       = relationship("User", back_populates="rebalancing_history")
 
 
 # ---------------------------------------------------------------------------

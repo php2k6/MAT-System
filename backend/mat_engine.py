@@ -37,10 +37,11 @@ Full execution flow
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
@@ -51,9 +52,11 @@ from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.core.security import decrypt_token
-from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, StockPrice, Strategy
+from backend.core.time_utils import now_ist
+from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, RebalancingHistory, StockPrice, Strategy
 
 logger = logging.getLogger(__name__)
+rebalance_logger = logging.getLogger("backend.rebalance")
 
 # ── Transaction-cost constants (matching backtest / Fyers CNC) ───────────────
 # Fyers charges zero brokerage on equity delivery (CNC).
@@ -161,13 +164,67 @@ class MATEngine:
     def run_rebalance(self) -> RebalanceResult:
         strat = self.strategy
         sid   = strat.strat_id
+        started_at_ist = now_ist()
         logger.info("MATEngine: START strat=%s", sid)
+        rebalance_logger.info(
+            "event=rebalance_start payload=%s",
+            json.dumps({
+                "stratId": str(sid),
+                "queueId": str(self.entry.id) if self.entry and self.entry.id else None,
+                "startedAt": started_at_ist.isoformat(),
+            }, ensure_ascii=True),
+        )
+
+        order_events: list[dict] = []
+        pre_cash: float | None = None
+        pre_total: float | None = None
+        pre_holdings_snapshot: dict[str, dict] = {}
+
+        def _done(result: RebalanceResult, *, post_cash: float | None = None, post_total: float | None = None,
+                  post_holdings: dict[str, dict] | None = None, summary: dict | None = None) -> RebalanceResult:
+            status = "done" if result.success else ("skipped" if result.skipped else "failed")
+            try:
+                self._record_rebalancing_history(
+                    status=status,
+                    reason=result.reason,
+                    started_at=started_at_ist,
+                    completed_at=now_ist(),
+                    pre_cash=pre_cash,
+                    post_cash=post_cash,
+                    pre_total=pre_total,
+                    post_total=post_total,
+                    pre_holdings=pre_holdings_snapshot,
+                    post_holdings=post_holdings or {},
+                    orders=order_events,
+                    summary={
+                        "details": result.details,
+                        **(summary or {}),
+                    },
+                )
+            except Exception:
+                logger.exception("MATEngine: failed to persist rebalancing history strat=%s", sid)
+
+            rebalance_logger.info(
+                "event=rebalance_done payload=%s",
+                json.dumps({
+                    "stratId": str(sid),
+                    "queueId": str(self.entry.id) if self.entry and self.entry.id else None,
+                    "status": status,
+                    "reason": result.reason,
+                    "preCash": pre_cash,
+                    "postCash": post_cash,
+                    "preTotal": pre_total,
+                    "postTotal": post_total,
+                    "orders": order_events,
+                }, ensure_ascii=True),
+            )
+            return result
 
         # ── 1. Broker auth ────────────────────────────────────────────────────
         try:
             fyers = self._get_fyers()
         except RuntimeError as e:
-            return RebalanceResult(skipped=True, reason=str(e))
+            return _done(RebalanceResult(skipped=True, reason=str(e)))
 
         # ── 2. Current DB holdings + LTP ─────────────────────────────────────
         # Read what we own from DB (our tracked state, strategy-scoped)
@@ -180,7 +237,7 @@ class MATEngine:
         try:
             cash = self._get_cash(fyers)
         except RuntimeError as e:
-            return RebalanceResult(skipped=True, reason=str(e))
+            return _done(RebalanceResult(skipped=True, reason=str(e)))
 
         # ── 4. Total capital ──────────────────────────────────────────────────
         # Need LTP for held stocks to calculate portfolio value
@@ -189,7 +246,16 @@ class MATEngine:
             try:
                 held_quotes = self._get_quotes(fyers, held_tickers)
             except Exception as e:
-                return RebalanceResult(skipped=True, reason=f"HELD_QUOTES_FAILED:{e}")
+                return _done(RebalanceResult(skipped=True, reason=f"HELD_QUOTES_FAILED:{e}"))
+
+        pre_holdings_snapshot = {
+            t: {
+                "qty": int(v["qty"]),
+                "avg_price": float(v.get("avg_price") or 0),
+                "last_price": float(held_quotes.get(t, {}).get("ltp", 0) or 0),
+            }
+            for t, v in db_holdings.items()
+        }
 
         equity_value   = sum(
             db_holdings[t]["qty"] * held_quotes.get(t, {}).get("ltp", 0)
@@ -197,6 +263,8 @@ class MATEngine:
         )
         total_capital  = cash + equity_value
         working_capital = total_capital * (1 - CASH_BUFFER)
+        pre_cash = float(cash)
+        pre_total = float(total_capital)
 
         logger.info(
             "MATEngine: strat=%s cash=%.2f equity=%.2f total=%.2f working=%.2f",
@@ -207,10 +275,10 @@ class MATEngine:
         try:
             scores, prev_close = self._compute_momentum(strat)
         except Exception as e:
-            return RebalanceResult(success=False, reason=f"MOMENTUM_ERROR:{e}")
+            return _done(RebalanceResult(success=False, reason=f"MOMENTUM_ERROR:{e}"))
 
         if not scores:
-            return RebalanceResult(success=False, reason="NO_MOMENTUM_SCORES")
+            return _done(RebalanceResult(success=False, reason="NO_MOMENTUM_SCORES"))
 
         # ── 6. Candidate list: top N × 1.5 ────────────────────────────────────
         n_target      = strat.n_stocks
@@ -225,7 +293,7 @@ class MATEngine:
             # Merge held_quotes (already fetched) in case any ticker is missing
             all_quotes = {**held_quotes, **all_quotes}
         except Exception as e:
-            return RebalanceResult(skipped=True, reason=f"QUOTES_FAILED:{e}")
+            return _done(RebalanceResult(skipped=True, reason=f"QUOTES_FAILED:{e}"))
 
         # ── 8. Build target portfolio ─────────────────────────────────────────
         # Walk candidates; skip UC stocks; max N/2 UC skips allowed
@@ -242,16 +310,16 @@ class MATEngine:
                 uc_skipped.append(ticker)
                 logger.info("MATEngine: %s is UC — skipped from buy list", ticker)
                 if len(uc_skipped) > n_target / 2:
-                    return RebalanceResult(
+                    return _done(RebalanceResult(
                         skipped=True,
                         reason="UC_GLOBAL_EVENT",
                         details={"uc_tickers": uc_skipped},
-                    )
+                    ))
                 continue
             target_tickers.append(ticker)
 
         if not target_tickers:
-            return RebalanceResult(success=False, reason="NO_ELIGIBLE_STOCKS")
+            return _done(RebalanceResult(success=False, reason="NO_ELIGIBLE_STOCKS"))
 
         target_set = set(target_tickers)
 
@@ -284,11 +352,11 @@ class MATEngine:
             if self._is_lc(all_quotes.get(t, {}))
         ]
         if lc_tickers:
-            return RebalanceResult(
+            return _done(RebalanceResult(
                 skipped=True,
                 reason="LC_DETECTED",
                 details={"lc_tickers": lc_tickers},
-            )
+            ))
 
         # Place ALL sell orders (exits first, then trims), rate-limited
         sell_order_map: dict[str, str] = {}   # ticker → order_id
@@ -297,10 +365,24 @@ class MATEngine:
             try:
                 oid = self._place_order(fyers, ticker, side=-1, qty=qty)
                 sell_order_map[ticker] = oid
+                order_events.append({
+                    "phase": "sell",
+                    "ticker": ticker,
+                    "requestedQty": int(qty),
+                    "orderId": oid,
+                    "status": "placed",
+                })
                 logger.info("MATEngine: SELL placed %s qty=%d oid=%s", ticker, qty, oid)
             except Exception as e:
+                order_events.append({
+                    "phase": "sell",
+                    "ticker": ticker,
+                    "requestedQty": int(qty),
+                    "status": "placement_failed",
+                    "error": str(e),
+                })
                 logger.error("MATEngine: sell placement failed for %s: %s", ticker, e)
-                return RebalanceResult(success=False, reason=f"SELL_PLACE_FAILED:{ticker}:{e}")
+                return _done(RebalanceResult(success=False, reason=f"SELL_PLACE_FAILED:{ticker}:{e}"))
 
         # Wait for ALL sell fills simultaneously
         sell_fills: dict[str, dict] = {}
@@ -311,6 +393,13 @@ class MATEngine:
                 for ticker, oid in sell_order_map.items()
             }
             for ticker, fill in sell_fills.items():
+                order_events.append({
+                    "phase": "sell",
+                    "ticker": ticker,
+                    "filledQty": int(fill.get("filled_qty", 0) or 0),
+                    "tradedPrice": float(fill.get("traded_price", 0) or 0),
+                    "status": str(fill.get("status", "unknown")),
+                })
                 logger.info(
                     "MATEngine: SELL fill %s qty=%d price=%.2f status=%s",
                     ticker, fill["filled_qty"], fill["traded_price"], fill.get("status", "?"),
@@ -320,7 +409,7 @@ class MATEngine:
         try:
             actual_cash = self._get_cash(fyers)
         except RuntimeError as e:
-            return RebalanceResult(success=False, reason=f"POST_SELL_FUNDS_FAILED:{e}")
+            return _done(RebalanceResult(success=False, reason=f"POST_SELL_FUNDS_FAILED:{e}"))
 
         logger.info("MATEngine: post-sell actual_cash=%.2f", actual_cash)
 
@@ -406,9 +495,23 @@ class MATEngine:
             try:
                 oid = self._place_order(fyers, t, side=1, qty=capped_qty)
                 buy_order_map[t] = oid
+                order_events.append({
+                    "phase": "buy",
+                    "ticker": t,
+                    "requestedQty": int(capped_qty),
+                    "orderId": oid,
+                    "status": "placed",
+                })
                 logger.info("MATEngine: BUY placed %s qty=%d oid=%s", t, capped_qty, oid)
             except Exception as e:
                 # Non-fatal: log and skip; continue with remaining buys
+                order_events.append({
+                    "phase": "buy",
+                    "ticker": t,
+                    "requestedQty": int(capped_qty),
+                    "status": "placement_failed",
+                    "error": str(e),
+                })
                 logger.error("MATEngine: buy placement failed for %s: %s", t, e)
 
         # Wait for ALL buy fills simultaneously
@@ -420,6 +523,13 @@ class MATEngine:
                 for ticker, oid in buy_order_map.items()
             }
             for ticker, fill in buy_fills.items():
+                order_events.append({
+                    "phase": "buy",
+                    "ticker": ticker,
+                    "filledQty": int(fill.get("filled_qty", 0) or 0),
+                    "tradedPrice": float(fill.get("traded_price", 0) or 0),
+                    "status": str(fill.get("status", "unknown")),
+                })
                 logger.info(
                     "MATEngine: BUY fill %s qty=%d price=%.2f status=%s",
                     ticker, fill["filled_qty"], fill["traded_price"], fill.get("status", "?"),
@@ -461,7 +571,7 @@ class MATEngine:
         try:
             final_cash = self._get_cash(fyers)
         except RuntimeError as e:
-            return RebalanceResult(success=False, reason=f"POST_BUY_FUNDS_FAILED:{e}")
+            return _done(RebalanceResult(success=False, reason=f"POST_BUY_FUNDS_FAILED:{e}"))
 
         # Compute final portfolio value (use LTP from quotes or prev_close)
         def _ltp(ticker: str) -> float:
@@ -470,6 +580,15 @@ class MATEngine:
 
         final_equity = sum(v["qty"] * _ltp(t) for t, v in new_holdings.items())
         final_total  = final_cash + final_equity
+        post_holdings_snapshot = {
+            t: {
+                "qty": int(v["qty"]),
+                "avg_price": float(v.get("avg_price") or 0),
+                "last_price": float(_ltp(t) or 0),
+            }
+            for t, v in new_holdings.items()
+            if int(v.get("qty", 0) or 0) > 0
+        }
 
         # ── Flush DB changes (committed by scheduler) ─────────────────────────
         try:
@@ -478,13 +597,25 @@ class MATEngine:
             self._flush_portfolio(final_total)
         except Exception:
             self.db.rollback()
-            raise
+            return _done(RebalanceResult(success=False, reason="DB_FLUSH_FAILED"))
 
         logger.info(
             "MATEngine: DONE strat=%s final_value=%.2f cash=%.2f n_holdings=%d",
             sid, final_total, final_cash, len(new_holdings),
         )
-        return RebalanceResult(success=True)
+        return _done(
+            RebalanceResult(success=True),
+            post_cash=float(final_cash),
+            post_total=float(final_total),
+            post_holdings=post_holdings_snapshot,
+            summary={
+                "targetTickers": target_tickers,
+                "sellExits": sells_exit,
+                "sellTrims": sells_trim,
+                "buyAttempted": buy_order_qty,
+                "ucSkipped": uc_skipped,
+            },
+        )
 
     # ── Fyers helpers ─────────────────────────────────────────────────────────
 
@@ -808,4 +939,40 @@ class MATEngine:
                 date=today,
                 value=total_value,
             ))
+        self.db.flush()
+
+    def _record_rebalancing_history(
+        self,
+        *,
+        status: str,
+        reason: str,
+        started_at,
+        completed_at,
+        pre_cash: float | None,
+        post_cash: float | None,
+        pre_total: float | None,
+        post_total: float | None,
+        pre_holdings: dict,
+        post_holdings: dict,
+        orders: list[dict],
+        summary: dict,
+    ) -> None:
+        row = RebalancingHistory(
+            strat_id=self.strategy.strat_id,
+            queue_id=getattr(self.entry, "id", None),
+            user_id=self.strategy.user_id,
+            status=status,
+            reason=reason,
+            started_at=started_at,
+            completed_at=completed_at,
+            pre_cash=pre_cash,
+            post_cash=post_cash,
+            pre_total=pre_total,
+            post_total=post_total,
+            pre_holdings_json=json.dumps(pre_holdings or {}, ensure_ascii=True),
+            post_holdings_json=json.dumps(post_holdings or {}, ensure_ascii=True),
+            orders_json=json.dumps(orders or [], ensure_ascii=True),
+            summary_json=json.dumps(summary or {}, ensure_ascii=True),
+        )
+        self.db.add(row)
         self.db.flush()
