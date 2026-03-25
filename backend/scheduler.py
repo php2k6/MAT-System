@@ -188,6 +188,33 @@ def _extract_holdings(holdings_resp: dict) -> dict[str, dict]:
     return out
 
 
+def _raw_holdings_rows(holdings_resp: dict) -> list[dict]:
+    rows = holdings_resp.get("holdings") or holdings_resp.get("overall") or []
+    if isinstance(rows, dict):
+        rows = rows.get("holdings") or rows.get("overall") or []
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _holdings_equity_value(rows: list[dict]) -> float:
+    equity = 0.0
+    for row in rows:
+        qty = int(row.get("quantity", row.get("qty", 0)) or 0)
+        if qty <= 0:
+            continue
+
+        market_val = float(row.get("marketVal", row.get("market_value", 0)) or 0)
+        if market_val > 0:
+            equity += market_val
+            continue
+
+        ltp = float(row.get("ltp", row.get("lastTradedPrice", 0)) or 0)
+        if ltp > 0:
+            equity += qty * ltp
+    return equity
+
+
 def _extract_ticker(symbol: str) -> str:
     # NSE:INFY-EQ -> INFY
     if ":" in symbol:
@@ -274,6 +301,7 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
         for strat in strategies:
             skip_snapshot_update = False
             broker_sync_applied = False
+            broker_equity_override: float | None = None
             if reconcile_from_broker:
                 fyers = _get_user_fyers(db, strat.user_id)
                 if fyers:
@@ -290,10 +318,10 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                         if not broker_holdings:
                             broker_holdings = _extract_positions(positions_resp)
 
-                        raw_holdings = holdings_resp.get("holdings") or holdings_resp.get("overall") or []
-                        if isinstance(raw_holdings, dict):
-                            raw_holdings = raw_holdings.get("holdings") or raw_holdings.get("overall") or []
-                        raw_holdings_count = len(raw_holdings) if isinstance(raw_holdings, list) else 0
+                        raw_rows = _raw_holdings_rows(holdings_resp)
+                        raw_holdings_count = len(raw_rows)
+                        if raw_holdings_count > 0:
+                            broker_equity_override = _holdings_equity_value(raw_rows)
 
                         if holdings_ok and raw_holdings_count > 0 and not broker_holdings:
                             # Broker says holdings exist, but parser produced none.
@@ -306,16 +334,16 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                                 len(broker_holdings),
                             )
 
-                        existing_count = (
-                            db.query(Holdings)
-                            .filter(Holdings.strat_id == strat.strat_id)
-                            .count()
-                        )
-
                         if cash is not None:
                             strat.unused_capital = float(cash)
 
-                        can_replace_holdings = bool(broker_holdings) or existing_count == 0
+                        # Replace holdings only when payload intent is clear:
+                        # - raw holdings rows present and parsed successfully, OR
+                        # - raw holdings rows absent (explicitly empty holdings).
+                        can_replace_holdings = (
+                            (raw_holdings_count == 0) or
+                            (raw_holdings_count > 0 and bool(broker_holdings))
+                        )
                         broker_snapshot_ok = holdings_ok or positions_ok
 
                         if broker_snapshot_ok and can_replace_holdings:
@@ -331,13 +359,13 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                             broker_sync_applied = True
                         else:
                             logger.warning(
-                                "eod_mark_to_market: skip holdings replace strat=%s cash_ok=%s holdings_ok=%s positions_ok=%s parsed_holdings=%d existing_holdings=%d",
+                                "eod_mark_to_market: skip holdings replace strat=%s cash_ok=%s holdings_ok=%s positions_ok=%s raw_holdings=%d parsed_holdings=%d",
                                 strat.strat_id,
                                 cash is not None,
                                 holdings_ok,
                                 positions_ok,
+                                raw_holdings_count,
                                 len(broker_holdings),
-                                existing_count,
                             )
                     except Exception:
                         logger.exception(
@@ -375,6 +403,11 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                 if ltp > 0:
                     h.last_price = ltp
                 equity += qty * ltp
+
+            # If broker reconciliation returned raw holdings rows, value snapshot
+            # should follow broker holdings valuation (prevents cash-only snapshots).
+            if broker_equity_override is not None:
+                equity = broker_equity_override
 
             cash = float(strat.unused_capital or 0)
             total_value = equity + cash
