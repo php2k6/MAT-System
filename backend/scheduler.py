@@ -84,6 +84,71 @@ def _get_any_active_fyers(db):
     )
 
 
+def _get_user_fyers(db, user_id):
+    session = (
+        db.query(BrokerSession)
+        .filter(
+            BrokerSession.user_id == user_id,
+            BrokerSession.token_date == date.today(),
+        )
+        .order_by(BrokerSession.created_at.desc())
+        .first()
+    )
+    if not session:
+        return None
+
+    token = decrypt_token(session.access_token_encrypted)
+    Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
+    return fyersModel.FyersModel(
+        client_id=settings.fyers_app_id,
+        token=token,
+        is_async=False,
+        log_path=settings.log_dir,
+    )
+
+
+def _extract_available_cash(funds_resp: dict) -> float | None:
+    if funds_resp.get("s") != "ok":
+        return None
+    limits = funds_resp.get("fund_limit", []) or []
+    for item in limits:
+        title = str(item.get("title", ""))
+        if "Available Balance" in title or "available_balance" in title.lower():
+            return float(item.get("equityAmount", item.get("val", 0)) or 0)
+    if limits:
+        return sum(float(i.get("equityAmount", i.get("val", 0)) or 0) for i in limits)
+    return None
+
+
+def _extract_positions(positions_resp: dict) -> dict[str, dict]:
+    if positions_resp.get("s") != "ok":
+        return {}
+
+    rows = positions_resp.get("netPositions") or positions_resp.get("overall") or []
+    out: dict[str, dict] = {}
+    for row in rows:
+        symbol = str(row.get("symbol", ""))
+        ticker = _extract_ticker(symbol)
+        if not ticker:
+            continue
+
+        qty = abs(int(row.get("netQty", row.get("qty", 0)) or 0))
+        if qty <= 0:
+            continue
+
+        avg = float(row.get("netAvg", row.get("avgPrice", row.get("buyAvg", 0))) or 0)
+        ltp = float(row.get("ltp", 0) or 0)
+        if ltp <= 0:
+            ltp = float(row.get("netLtp", row.get("lastPrice", avg)) or avg)
+
+        out[ticker] = {
+            "qty": qty,
+            "avg_price": avg,
+            "last_price": ltp,
+        }
+    return out
+
+
 def _extract_ticker(symbol: str) -> str:
     # NSE:INFY-EQ -> INFY
     if ":" in symbol:
@@ -148,9 +213,10 @@ def refresh_live_prices() -> dict:
         db.close()
 
 
-def eod_mark_to_market() -> None:
+def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
     """
     End-of-day valuation snapshot:
+    - optional broker reconciliation (cash + holdings) from Fyers
     - refresh holdings.last_price from latest live cache (fallback existing)
     - update strategy.market_value
     - upsert portfolio value for today
@@ -167,6 +233,31 @@ def eod_mark_to_market() -> None:
             return
 
         for strat in strategies:
+            if reconcile_from_broker:
+                fyers = _get_user_fyers(db, strat.user_id)
+                if fyers:
+                    try:
+                        funds_resp = fyers.funds()
+                        positions_resp = fyers.positions()
+                        cash = _extract_available_cash(funds_resp)
+                        positions = _extract_positions(positions_resp)
+                        if cash is not None:
+                            db.query(Holdings).filter(Holdings.strat_id == strat.strat_id).delete()
+                            for ticker, p in positions.items():
+                                db.add(Holdings(
+                                    strat_id=strat.strat_id,
+                                    ticker=ticker,
+                                    qty=int(p["qty"]),
+                                    avg_price=float(p["avg_price"]),
+                                    last_price=float(p["last_price"]),
+                                ))
+                            strat.unused_capital = float(cash)
+                    except Exception:
+                        logger.exception(
+                            "eod_mark_to_market: fyers reconciliation failed for strat=%s",
+                            strat.strat_id,
+                        )
+
             holdings = (
                 db.query(Holdings)
                 .filter(Holdings.strat_id == strat.strat_id)
@@ -206,7 +297,11 @@ def eod_mark_to_market() -> None:
                 db.add(Portfolio(strat_id=strat.strat_id, date=today, value=total_value))
 
         db.commit()
-        logger.info("eod_mark_to_market: completed for %d strategies", len(strategies))
+        logger.info(
+            "eod_mark_to_market: completed for %d strategies reconcile_from_broker=%s",
+            len(strategies),
+            reconcile_from_broker,
+        )
     except Exception:
         db.rollback()
         logger.exception("eod_mark_to_market: unexpected error")
@@ -422,11 +517,25 @@ def start_scheduler() -> None:
     _scheduler.add_job(
         eod_mark_to_market,
         trigger=CronTrigger(
+            hour=int(settings.reconcile_open_hour_ist),
+            minute=int(settings.reconcile_open_minute_ist),
+            timezone=settings.scheduler_timezone,
+            day_of_week="mon-fri",
+        ),
+        kwargs={"reconcile_from_broker": True},
+        id="open_reconcile_mark_to_market",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    _scheduler.add_job(
+        eod_mark_to_market,
+        trigger=CronTrigger(
             hour=int(settings.eod_mtm_hour_ist),
             minute=int(settings.eod_mtm_minute_ist),
             timezone=settings.scheduler_timezone,
             day_of_week="mon-fri",
         ),
+        kwargs={"reconcile_from_broker": True},
         id="eod_mark_to_market",
         replace_existing=True,
         misfire_grace_time=3600,

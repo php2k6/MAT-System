@@ -4,8 +4,10 @@ import logging
 import threading
 import time
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fyers_apiv3.FyersWebsocket.data_ws import FyersDataSocket
 
@@ -13,6 +15,18 @@ from backend.config import settings
 from backend.core.live_prices import get_live_price_store
 
 logger = logging.getLogger(__name__)
+_IST = ZoneInfo(settings.scheduler_timezone)
+
+
+def _is_market_hours() -> bool:
+    now_ist = datetime.now(_IST)
+    if now_ist.weekday() >= 5:
+        return False
+
+    minutes = now_ist.hour * 60 + now_ist.minute
+    market_open = int(settings.market_open_hour_ist) * 60 + int(settings.market_open_minute_ist)
+    market_close = int(settings.market_close_hour_ist) * 60 + int(settings.market_close_minute_ist)
+    return market_open <= minutes <= market_close
 
 
 def _norm_symbol(symbol: str | None) -> str | None:
@@ -138,6 +152,10 @@ class MarketFeedManager:
         Ensure a single market feed is running.
         Returns True if started now, False if already running.
         """
+        if not _is_market_hours():
+            logger.info("MarketFeedManager: skipped startup outside market hours")
+            return False
+
         normalized = {_norm_symbol(s) for s in symbols}
         normalized = {s for s in normalized if s}
 
