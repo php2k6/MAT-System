@@ -51,6 +51,7 @@ from fyers_apiv3 import fyersModel
 from sqlalchemy.orm import Session
 
 from backend.config import settings
+from backend.core.fyers_funds import extract_available_cash
 from backend.core.security import decrypt_token
 from backend.core.time_utils import now_ist
 from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, RebalancingHistory, StockPrice, Strategy
@@ -644,12 +645,10 @@ class MATEngine:
         resp = fyers.funds()
         if resp.get("s") != "ok":
             raise RuntimeError(f"FUNDS_FAILED:{resp}")
-        for item in resp.get("fund_limit", []):
-            title = item.get("title", "")
-            if "Available Balance" in title or "available_balance" in title.lower():
-                return float(item.get("equityAmount", item.get("val", 0)))
-        # Fallback: sum all equity amounts
-        return sum(float(i.get("equityAmount", i.get("val", 0))) for i in resp.get("fund_limit", []))
+        cash = extract_available_cash(resp)
+        if cash is None:
+            raise RuntimeError(f"FUNDS_PARSE_FAILED:{resp}")
+        return float(cash)
 
     def _get_quotes(
         self, fyers: fyersModel.FyersModel, tickers: list[str]

@@ -8,6 +8,7 @@ from fyers_apiv3 import fyersModel
 from sqlalchemy.orm import Session
 
 from backend.core.deps import get_current_user
+from backend.core.fyers_funds import extract_available_cash, summarize_funds
 from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decrypt_token, encrypt_token
 from backend.core.time_utils import now_ist
@@ -156,6 +157,7 @@ def testing_fyers_health(
                 "status": funds_resp.get("s"),
                 "code": funds_resp.get("code"),
                 "fundItems": len(funds_resp.get("fund_limit", []) or []),
+                "availableCash": extract_available_cash(funds_resp),
             },
             "holdings": {
                 "ok": _ok(holdings_resp),
@@ -183,6 +185,36 @@ def testing_fyers_health(
             "sessionDate": session.token_date.isoformat(),
             "checkedAt": now_ist().isoformat(),
             "checks": checks,
+            "details": {
+                "funds": summarize_funds(funds_resp),
+                "holdings": {
+                    "count": len(holdings_resp.get("holdings", []) or []),
+                    "items": [
+                        {
+                            "symbol": row.get("symbol") or row.get("nseSymbol") or row.get("isin"),
+                            "qty": row.get("quantity", row.get("qty")),
+                            "ltp": row.get("ltp"),
+                            "marketVal": row.get("marketVal", row.get("market_value")),
+                            "costPrice": row.get("costPrice", row.get("avg_price")),
+                        }
+                        for row in (holdings_resp.get("holdings", []) or [])[:25]
+                    ],
+                },
+                "positions": {
+                    "count": len(positions_resp.get("netPositions", []) or []),
+                    "items": [
+                        {
+                            "symbol": row.get("symbol"),
+                            "qty": row.get("netQty", row.get("qty")),
+                            "avg": row.get("netAvg", row.get("avgPrice")),
+                            "ltp": row.get("ltp"),
+                            "pnl": row.get("pl", row.get("pnl")),
+                            "marketVal": row.get("marketVal"),
+                        }
+                        for row in (positions_resp.get("netPositions", []) or [])[:25]
+                    ],
+                },
+            },
         }
     except Exception as exc:
         logger.exception("broker.testing.fyers_health failed user_id=%s", current_user.user_id)
