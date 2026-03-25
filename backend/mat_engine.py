@@ -61,12 +61,13 @@ rebalance_logger = logging.getLogger("backend.rebalance")
 
 # ── Transaction-cost constants (matching backtest / Fyers CNC) ───────────────
 # Fyers charges zero brokerage on equity delivery (CNC).
-BROKERAGE       = 0.0
-STT_SELL        = 0.001
-EXCHANGE_CHARGE = 0.0000325
-SEBI_CHARGE     = 0.000001
-GST_RATE        = 0.18
-STAMP_DUTY_BUY  = 0.00015
+# MAT_BROKERAGE_RATE is configured as percentage (e.g. 0.3 for 0.3%).
+BROKERAGE       = max(float(settings.mat_brokerage_rate), 0.0) / 100.0
+STT_SELL        = max(float(settings.mat_stt_sell_rate), 0.0)
+EXCHANGE_CHARGE = max(float(settings.mat_exchange_charge_rate), 0.0)
+SEBI_CHARGE     = max(float(settings.mat_sebi_charge_rate), 0.0)
+GST_RATE        = max(float(settings.mat_gst_rate), 0.0)
+STAMP_DUTY_BUY  = max(float(settings.mat_stamp_duty_buy_rate), 0.0)
 CASH_BUFFER     = min(max(float(settings.mat_cash_buffer), 0.0), 0.5)
 
 # ── Momentum constants (matching backtest) ────────────────────────────────────
