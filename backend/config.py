@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     mat_order_poll_interval_seconds: int = 5
     mat_order_min_interval_seconds: float = 0.11
     mat_candidate_pool_multiplier: float = 1.5
+    mat_brokerage_rate: float = 0.0
+    mat_stt_sell_rate: float = 0.001
+    mat_exchange_charge_rate: float = 0.0000325
+    mat_sebi_charge_rate: float = 0.000001
+    mat_gst_rate: float = 0.18
+    mat_stamp_duty_buy_rate: float = 0.00015
 
     # Logging
     log_level: str = "INFO"
