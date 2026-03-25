@@ -114,8 +114,16 @@ def _extract_positions(positions_resp: dict) -> dict[str, dict]:
         return {}
 
     rows = positions_resp.get("netPositions") or positions_resp.get("overall") or []
+    if isinstance(rows, dict):
+        rows = rows.get("netPositions") or rows.get("overall") or []
+    if not isinstance(rows, list):
+        return {}
+
     out: dict[str, dict] = {}
     for row in rows:
+        if not isinstance(row, dict):
+            continue
+
         symbol = str(row.get("symbol", ""))
         ticker = _extract_ticker(symbol)
         if not ticker:
