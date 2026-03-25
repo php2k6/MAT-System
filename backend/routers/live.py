@@ -119,6 +119,40 @@ def _extract_positions_snapshot(positions_resp: dict) -> tuple[float, float, flo
     return invested, current_value, pnl
 
 
+def _extract_holdings_snapshot(holdings_resp: dict) -> tuple[float, float, float] | None:
+    if holdings_resp.get("s") != "ok":
+        return None
+
+    rows = holdings_resp.get("holdings") or holdings_resp.get("overall") or []
+    if isinstance(rows, dict):
+        rows = rows.get("holdings") or rows.get("overall") or []
+    if not isinstance(rows, list):
+        return None
+
+    invested = 0.0
+    current_value = 0.0
+    pnl = 0.0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        qty = int(row.get("quantity", row.get("qty", 0)) or 0)
+        if qty <= 0:
+            continue
+
+        avg = float(row.get("costPrice", row.get("avgPrice", row.get("holdingPrice", 0))) or 0)
+        ltp = float(row.get("ltp", row.get("lastTradedPrice", 0)) or 0)
+        market_val = float(row.get("marketVal", 0) or 0)
+
+        pos_invested = qty * avg if avg > 0 else 0.0
+        pos_current = market_val if market_val > 0 else (qty * ltp if ltp > 0 else pos_invested)
+        invested += pos_invested
+        current_value += pos_current
+        pnl += pos_current - pos_invested
+
+    return invested, current_value, pnl
+
+
 def _fetch_fyers_summary_for_user(db, user_id):
     try:
         session = (
@@ -143,10 +177,12 @@ def _fetch_fyers_summary_for_user(db, user_id):
         )
 
         funds = extract_available_cash(fyers.funds())
+        holdings = _extract_holdings_snapshot(fyers.holdings())
         positions = _extract_positions_snapshot(fyers.positions())
-        if funds is None or positions is None:
+        snapshot = holdings if holdings is not None else positions
+        if funds is None or snapshot is None:
             return None
-        invested, positions_value, pnl = positions
+        invested, positions_value, pnl = snapshot
         current_value = funds + positions_value
         pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
 

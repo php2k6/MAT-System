@@ -146,6 +146,43 @@ def _extract_positions(positions_resp: dict) -> dict[str, dict]:
     return out
 
 
+def _extract_holdings(holdings_resp: dict) -> dict[str, dict]:
+    if holdings_resp.get("s") != "ok":
+        return {}
+
+    rows = holdings_resp.get("holdings") or holdings_resp.get("overall") or []
+    if isinstance(rows, dict):
+        rows = rows.get("holdings") or rows.get("overall") or []
+    if not isinstance(rows, list):
+        return {}
+
+    out: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        symbol = str(row.get("symbol") or row.get("nseSymbol") or row.get("tradingsymbol") or "")
+        ticker = _extract_ticker(symbol)
+        if not ticker:
+            continue
+
+        qty = int(row.get("quantity", row.get("qty", 0)) or 0)
+        if qty <= 0:
+            continue
+
+        avg = float(row.get("costPrice", row.get("avgPrice", row.get("holdingPrice", 0))) or 0)
+        ltp = float(row.get("ltp", row.get("lastTradedPrice", row.get("marketVal", 0))) or 0)
+        if ltp <= 0:
+            ltp = avg
+
+        out[ticker] = {
+            "qty": qty,
+            "avg_price": avg,
+            "last_price": ltp,
+        }
+    return out
+
+
 def _extract_ticker(symbol: str) -> str:
     # NSE:INFY-EQ -> INFY
     if ":" in symbol:
@@ -235,13 +272,32 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                 if fyers:
                     try:
                         funds_resp = fyers.funds()
+                        holdings_resp = fyers.holdings()
                         positions_resp = fyers.positions()
+
                         cash = extract_available_cash(funds_resp)
+                        holdings_ok = str(holdings_resp.get("s", "")).lower() == "ok"
                         positions_ok = str(positions_resp.get("s", "")).lower() == "ok"
-                        positions = _extract_positions(positions_resp)
-                        if cash is not None and positions_ok:
+
+                        broker_holdings = _extract_holdings(holdings_resp)
+                        if not broker_holdings:
+                            broker_holdings = _extract_positions(positions_resp)
+
+                        existing_count = (
+                            db.query(Holdings)
+                            .filter(Holdings.strat_id == strat.strat_id)
+                            .count()
+                        )
+
+                        if cash is not None:
+                            strat.unused_capital = float(cash)
+
+                        can_replace_holdings = bool(broker_holdings) or existing_count == 0
+                        broker_snapshot_ok = holdings_ok or positions_ok
+
+                        if broker_snapshot_ok and can_replace_holdings:
                             db.query(Holdings).filter(Holdings.strat_id == strat.strat_id).delete()
-                            for ticker, p in positions.items():
+                            for ticker, p in broker_holdings.items():
                                 db.add(Holdings(
                                     strat_id=strat.strat_id,
                                     ticker=ticker,
@@ -249,13 +305,15 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                                     avg_price=float(p["avg_price"]),
                                     last_price=float(p["last_price"]),
                                 ))
-                            strat.unused_capital = float(cash)
                         else:
                             logger.warning(
-                                "eod_mark_to_market: skip broker sync strat=%s cash_ok=%s positions_ok=%s",
+                                "eod_mark_to_market: skip holdings replace strat=%s cash_ok=%s holdings_ok=%s positions_ok=%s parsed_holdings=%d existing_holdings=%d",
                                 strat.strat_id,
                                 cash is not None,
+                                holdings_ok,
                                 positions_ok,
+                                len(broker_holdings),
+                                existing_count,
                             )
                     except Exception:
                         logger.exception(
