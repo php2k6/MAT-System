@@ -257,7 +257,7 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
     - upsert portfolio value for today
     """
     db = SessionLocal()
-    today = date.today()
+    today = now_ist().date()
     try:
         strategies = (
             db.query(Strategy)
@@ -350,15 +350,13 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
             total_value = equity + cash
             strat.market_value = total_value
 
-            row = (
-                db.query(Portfolio)
-                .filter(Portfolio.strat_id == strat.strat_id, Portfolio.date == today)
-                .first()
-            )
-            if row:
-                row.value = total_value
-            else:
-                db.add(Portfolio(strat_id=strat.strat_id, date=today, value=total_value))
+            # Force-replace today's snapshot so manual triggers always refresh
+            # the current trading date value.
+            db.query(Portfolio).filter(
+                Portfolio.strat_id == strat.strat_id,
+                Portfolio.date == today,
+            ).delete(synchronize_session=False)
+            db.add(Portfolio(strat_id=strat.strat_id, date=today, value=total_value))
 
         db.commit()
         logger.info(
