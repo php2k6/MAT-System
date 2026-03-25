@@ -793,10 +793,10 @@ def trigger_eod_mtm(
 
     _ = user
     logger.info("strategy.testing.eod_mtm trigger user_id=%s", user.user_id)
-    eod_mark_to_market()
+    eod_mark_to_market(reconcile_from_broker=True)
     return {
         "success": True,
-        "message": "Triggered EOD mark-to-market",
+        "message": "Triggered EOD mark-to-market with broker reconciliation",
     }
 
 
