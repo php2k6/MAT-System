@@ -172,7 +172,11 @@ def _extract_holdings(holdings_resp: dict) -> dict[str, dict]:
             continue
 
         avg = float(row.get("costPrice", row.get("avgPrice", row.get("holdingPrice", 0))) or 0)
-        ltp = float(row.get("ltp", row.get("lastTradedPrice", row.get("marketVal", 0))) or 0)
+        ltp = float(row.get("ltp", row.get("lastTradedPrice", 0)) or 0)
+        if ltp <= 0:
+            market_val = float(row.get("marketVal", row.get("market_value", 0)) or 0)
+            if market_val > 0 and qty > 0:
+                ltp = market_val / qty
         if ltp <= 0:
             ltp = avg
 
@@ -268,6 +272,8 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
             return
 
         for strat in strategies:
+            skip_snapshot_update = False
+            broker_sync_applied = False
             if reconcile_from_broker:
                 fyers = _get_user_fyers(db, strat.user_id)
                 if fyers:
@@ -283,6 +289,22 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                         broker_holdings = _extract_holdings(holdings_resp)
                         if not broker_holdings:
                             broker_holdings = _extract_positions(positions_resp)
+
+                        raw_holdings = holdings_resp.get("holdings") or holdings_resp.get("overall") or []
+                        if isinstance(raw_holdings, dict):
+                            raw_holdings = raw_holdings.get("holdings") or raw_holdings.get("overall") or []
+                        raw_holdings_count = len(raw_holdings) if isinstance(raw_holdings, list) else 0
+
+                        if holdings_ok and raw_holdings_count > 0 and not broker_holdings:
+                            # Broker says holdings exist, but parser produced none.
+                            # Do not risk writing cash-only valuation.
+                            skip_snapshot_update = True
+                            logger.error(
+                                "eod_mark_to_market: holdings parse mismatch strat=%s raw_count=%d parsed_count=%d; skipping snapshot update",
+                                strat.strat_id,
+                                raw_holdings_count,
+                                len(broker_holdings),
+                            )
 
                         existing_count = (
                             db.query(Holdings)
@@ -306,6 +328,7 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                                     avg_price=float(p["avg_price"]),
                                     last_price=float(p["last_price"]),
                                 ))
+                            broker_sync_applied = True
                         else:
                             logger.warning(
                                 "eod_mark_to_market: skip holdings replace strat=%s cash_ok=%s holdings_ok=%s positions_ok=%s parsed_holdings=%d existing_holdings=%d",
@@ -327,8 +350,15 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                 .filter(Holdings.strat_id == strat.strat_id)
                 .all()
             )
+
+            if skip_snapshot_update:
+                logger.warning(
+                    "eod_mark_to_market: snapshot update skipped strat=%s to avoid cash-only overwrite",
+                    strat.strat_id,
+                )
+                continue
             tickers = [h.ticker for h in holdings if (h.qty or 0) > 0]
-            live_map = get_live_price_store().get_prices(tickers)
+            live_map = {} if broker_sync_applied else get_live_price_store().get_prices(tickers)
 
             equity = 0.0
             for h in holdings:
