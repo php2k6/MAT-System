@@ -12,6 +12,7 @@ from fyers_apiv3 import fyersModel
 
 from backend.config import settings
 from backend.core.deps import get_current_user
+from backend.core.fyers_funds import extract_available_cash
 from backend.core.live_prices import get_live_price_store
 from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decode_access_token, decrypt_token
@@ -92,19 +93,6 @@ def _pick_strategy_for_user(db, user_id):
     return deployed
 
 
-def _extract_available_cash(funds_resp: dict) -> float | None:
-    if funds_resp.get("s") != "ok":
-        return None
-    limits = funds_resp.get("fund_limit", []) or []
-    for item in limits:
-        title = str(item.get("title", ""))
-        if "Available Balance" in title or "available_balance" in title.lower():
-            return float(item.get("equityAmount", item.get("val", 0)) or 0)
-    if limits:
-        return sum(float(i.get("equityAmount", i.get("val", 0)) or 0) for i in limits)
-    return None
-
-
 def _extract_positions_snapshot(positions_resp: dict) -> tuple[float, float, float] | None:
     if positions_resp.get("s") != "ok":
         return None
@@ -154,7 +142,7 @@ def _fetch_fyers_summary_for_user(db, user_id):
             log_path=settings.log_dir,
         )
 
-        funds = _extract_available_cash(fyers.funds())
+        funds = extract_available_cash(fyers.funds())
         positions = _extract_positions_snapshot(fyers.positions())
         if funds is None or positions is None:
             return None

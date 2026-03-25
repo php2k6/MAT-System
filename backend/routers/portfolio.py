@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.config import settings
+from backend.core.fyers_funds import extract_available_cash
 from backend.core.live_prices import get_live_price_store
 from backend.core.deps import get_current_user
 from backend.core.security import decrypt_token
@@ -41,19 +42,6 @@ def _is_market_hours() -> bool:
     market_open = int(settings.market_open_hour_ist) * 60 + int(settings.market_open_minute_ist)
     market_close = int(settings.market_close_hour_ist) * 60 + int(settings.market_close_minute_ist)
     return market_open <= minutes <= market_close
-
-
-def _extract_available_cash(funds_resp: dict) -> float | None:
-    if funds_resp.get("s") != "ok":
-        return None
-    limits = funds_resp.get("fund_limit", []) or []
-    for item in limits:
-        title = str(item.get("title", ""))
-        if "Available Balance" in title or "available_balance" in title.lower():
-            return float(item.get("equityAmount", item.get("val", 0)) or 0)
-    if limits:
-        return sum(float(i.get("equityAmount", i.get("val", 0)) or 0) for i in limits)
-    return None
 
 
 def _extract_positions_snapshot(positions_resp: dict) -> tuple[float, float, float] | None:
@@ -111,7 +99,7 @@ def _fetch_fyers_summary(db: Session, user_id) -> dict | None:
         funds_resp = fyers.funds()
         positions_resp = fyers.positions()
 
-        cash = _extract_available_cash(funds_resp)
+        cash = extract_available_cash(funds_resp)
         positions = _extract_positions_snapshot(positions_resp)
         if cash is None or positions is None:
             return None

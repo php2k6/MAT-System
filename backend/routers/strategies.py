@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from backend.backtest_engine import build_series, build_stats, run_backtest
 from backend.core.deps import get_current_user
+from backend.core.fyers_funds import extract_available_cash
 from backend.core.security import decrypt_token
 from backend.core.time_utils import now_ist
 from backend.config import settings
@@ -43,13 +44,10 @@ def _get_available_balance(broker_session: BrokerSession) -> float:
     resp = fyers.funds()
     if resp.get("s") != "ok":
         raise RuntimeError(f"FUNDS_FAILED:{resp}")
-
-    for item in resp.get("fund_limit", []):
-        title = item.get("title", "")
-        if "Available Balance" in title or "available_balance" in title.lower():
-            return float(item.get("equityAmount", item.get("val", 0)))
-
-    return sum(float(i.get("equityAmount", i.get("val", 0))) for i in resp.get("fund_limit", []))
+    cash = extract_available_cash(resp)
+    if cash is None:
+        raise RuntimeError(f"FUNDS_PARSE_FAILED:{resp}")
+    return float(cash)
 
 
 def _latest_user_strategy(db: Session, user_id):

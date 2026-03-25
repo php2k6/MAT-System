@@ -28,6 +28,7 @@ from backend.config import settings
 from backend.core.live_prices import get_live_price_store
 from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decrypt_token
+from backend.core.fyers_funds import extract_available_cash
 from backend.core.time_utils import now_ist
 from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
 from backend.database import SessionLocal
@@ -106,19 +107,6 @@ def _get_user_fyers(db, user_id):
         is_async=False,
         log_path=settings.log_dir,
     )
-
-
-def _extract_available_cash(funds_resp: dict) -> float | None:
-    if funds_resp.get("s") != "ok":
-        return None
-    limits = funds_resp.get("fund_limit", []) or []
-    for item in limits:
-        title = str(item.get("title", ""))
-        if "Available Balance" in title or "available_balance" in title.lower():
-            return float(item.get("equityAmount", item.get("val", 0)) or 0)
-    if limits:
-        return sum(float(i.get("equityAmount", i.get("val", 0)) or 0) for i in limits)
-    return None
 
 
 def _extract_positions(positions_resp: dict) -> dict[str, dict]:
@@ -240,9 +228,10 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                     try:
                         funds_resp = fyers.funds()
                         positions_resp = fyers.positions()
-                        cash = _extract_available_cash(funds_resp)
+                        cash = extract_available_cash(funds_resp)
+                        positions_ok = str(positions_resp.get("s", "")).lower() == "ok"
                         positions = _extract_positions(positions_resp)
-                        if cash is not None:
+                        if cash is not None and positions_ok:
                             db.query(Holdings).filter(Holdings.strat_id == strat.strat_id).delete()
                             for ticker, p in positions.items():
                                 db.add(Holdings(
@@ -253,6 +242,13 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
                                     last_price=float(p["last_price"]),
                                 ))
                             strat.unused_capital = float(cash)
+                        else:
+                            logger.warning(
+                                "eod_mark_to_market: skip broker sync strat=%s cash_ok=%s positions_ok=%s",
+                                strat.strat_id,
+                                cash is not None,
+                                positions_ok,
+                            )
                     except Exception:
                         logger.exception(
                             "eod_mark_to_market: fyers reconciliation failed for strat=%s",
