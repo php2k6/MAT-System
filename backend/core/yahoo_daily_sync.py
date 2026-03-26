@@ -29,6 +29,65 @@ class SymbolSyncResult:
     reason: str = ""
 
 
+def _retry_yahoo_call(fn, *, op_name: str, symbol: str | None = None):
+    attempts = max(int(settings.yahoo_fetch_retries), 1)
+    wait_seconds = max(float(settings.yahoo_fetch_retry_delay_seconds), 0.0)
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "yahoo_sync %s retry attempt=%d/%d symbol=%s err=%s",
+                op_name,
+                attempt,
+                attempts,
+                symbol or "-",
+                exc,
+            )
+            if attempt < attempts and wait_seconds > 0:
+                time.sleep(wait_seconds * attempt)
+
+    if last_exc is not None:
+        raise last_exc
+
+
+def _analyze_history_integrity(existing: pd.DataFrame, max_gap_days: int) -> tuple[bool, str]:
+    """
+    Validate symbol history continuity to detect accidental historical data loss.
+    Returns (needs_rebuild, reason).
+    """
+    if existing.empty:
+        return False, ""
+
+    dates = pd.to_datetime(existing["date"]).dropna().sort_values().drop_duplicates()
+    if dates.empty:
+        return True, "empty_dates"
+
+    first = dates.iloc[0]
+    last = dates.iloc[-1]
+
+    present_years = set(dates.dt.year.astype(int).tolist())
+    expected_years = set(range(int(first.year), int(last.year) + 1))
+    missing_years = sorted(expected_years - present_years)
+
+    max_gap = 0
+    if len(dates) >= 2:
+        gaps = dates.diff().dt.days.dropna()
+        if not gaps.empty:
+            max_gap = int(gaps.max())
+
+    if missing_years:
+        return True, f"missing_years={','.join(str(y) for y in missing_years)}"
+
+    if max_gap > int(max_gap_days):
+        return True, f"max_gap_days={max_gap}"
+
+    return False, ""
+
+
 def _to_ts(value: date | datetime | pd.Timestamp) -> pd.Timestamp:
     return pd.to_datetime(value).normalize()
 
@@ -113,8 +172,11 @@ def _recompute_tail(stock_df: pd.DataFrame, window: int, annualise: bool) -> tup
 def _detect_split_or_bonus(symbol: str, sym_last: pd.Timestamp, lookback_days: int) -> bool:
     check_from = (sym_last - timedelta(days=lookback_days)).normalize()
     try:
-        ticker = yf.Ticker(f"{symbol}.NS")
-        splits = ticker.splits
+        def _call():
+            ticker = yf.Ticker(f"{symbol}.NS")
+            return ticker.splits
+
+        splits = _retry_yahoo_call(_call, op_name="split_check", symbol=symbol)
         if splits is None or splits.empty:
             return False
 
@@ -138,12 +200,16 @@ def _detect_split_or_bonus(symbol: str, sym_last: pd.Timestamp, lookback_days: i
 
 def _fetch_reference_last_date(reference_ticker: str) -> pd.Timestamp | None:
     try:
-        ref = yf.download(
-            reference_ticker,
-            period="5d",
-            progress=False,
-            auto_adjust=True,
-            rounding=True,
+        ref = _retry_yahoo_call(
+            lambda: yf.download(
+                reference_ticker,
+                period="5d",
+                progress=False,
+                auto_adjust=True,
+                rounding=True,
+            ),
+            op_name="reference_fetch",
+            symbol=reference_ticker,
         )
         if ref.empty:
             return None
@@ -155,12 +221,16 @@ def _fetch_reference_last_date(reference_ticker: str) -> pd.Timestamp | None:
 
 def _fetch_full(symbol: str, start_date: str, end_date: pd.Timestamp) -> pd.DataFrame | None:
     try:
-        data = yf.download(
-            f"{symbol}.NS",
-            start=start_date,
-            end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d"),
-            auto_adjust=True,
-            progress=False,
+        data = _retry_yahoo_call(
+            lambda: yf.download(
+                f"{symbol}.NS",
+                start=start_date,
+                end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+                auto_adjust=True,
+                progress=False,
+            ),
+            op_name="full_fetch",
+            symbol=symbol,
         )
         clean = _clean_ohlcv(data, symbol)
         return clean if not clean.empty else None
@@ -171,12 +241,16 @@ def _fetch_full(symbol: str, start_date: str, end_date: pd.Timestamp) -> pd.Data
 
 def _fetch_incremental(symbol: str, start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame | None:
     try:
-        data = yf.download(
-            f"{symbol}.NS",
-            start=start_date.strftime("%Y-%m-%d"),
-            end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d"),
-            auto_adjust=True,
-            progress=False,
+        data = _retry_yahoo_call(
+            lambda: yf.download(
+                f"{symbol}.NS",
+                start=start_date.strftime("%Y-%m-%d"),
+                end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+                auto_adjust=True,
+                progress=False,
+            ),
+            op_name="incremental_fetch",
+            symbol=symbol,
         )
         clean = _clean_ohlcv(data, symbol)
         return clean if not clean.empty else None
@@ -315,6 +389,26 @@ def _sync_symbol(db: Session, symbol: str, last_available: pd.Timestamp) -> Symb
         return SymbolSyncResult(symbol=symbol, mode="full_refetch", inserted_or_upserted=up)
 
     sym_last = _to_ts(existing["date"].max())
+    needs_rebuild, integrity_reason = _analyze_history_integrity(existing, settings.yahoo_max_internal_gap_days)
+    if needs_rebuild:
+        logger.warning("yahoo_sync integrity_rebuild symbol=%s reason=%s", symbol, integrity_reason)
+        full = _fetch_full(symbol, settings.yahoo_base_date, last_available)
+        if full is None or full.empty:
+            return SymbolSyncResult(symbol=symbol, mode="failed", reason=f"integrity_refetch_failed:{integrity_reason}")
+
+        full["index_member"] = existing_tag
+        full = _compute_indicators_full(full, settings.yahoo_volatility_window, settings.yahoo_annualise_vol)
+
+        deleted = db.query(StockPrice).filter(StockPrice.ticker == symbol).delete(synchronize_session=False)
+        up = _upsert_rows(db, _to_db_records(full))
+        return SymbolSyncResult(
+            symbol=symbol,
+            mode="full_refetch",
+            inserted_or_upserted=up,
+            deleted=deleted,
+            reason=f"integrity_rebuild:{integrity_reason}",
+        )
+
     if sym_last >= last_available:
         return SymbolSyncResult(symbol=symbol, mode="up_to_date")
 
@@ -358,19 +452,6 @@ def run_yahoo_daily_sync(db: Session) -> dict[str, Any]:
     if ref_last is None:
         ref_last = _to_ts(pd.Timestamp.today() - timedelta(days=1))
 
-    db_last = db.query(func.max(StockPrice.date)).scalar()
-    if db_last is not None and _to_ts(db_last) >= ref_last:
-        return {
-            "success": True,
-            "status": "up_to_date",
-            "lastAvailableDate": ref_last.date().isoformat(),
-            "dbLastDate": _to_ts(db_last).date().isoformat(),
-            "symbolsTotal": 0,
-            "symbolsProcessed": 0,
-            "summary": {"up_to_date": 0, "incremental": 0, "full_refetch": 0, "no_data": 0, "failed": 0},
-            "durationSeconds": round((datetime.now() - started).total_seconds(), 2),
-        }
-
     symbols = [row.ticker for row in db.query(StockTicker.ticker).order_by(StockTicker.ticker.asc()).all()]
     if not symbols:
         return {
@@ -402,6 +483,13 @@ def run_yahoo_daily_sync(db: Session) -> dict[str, Any]:
                 }
             )
             db.commit()
+            if result.mode in {"failed", "no_data"}:
+                logger.warning(
+                    "yahoo_sync symbol_result symbol=%s mode=%s reason=%s",
+                    result.symbol,
+                    result.mode,
+                    result.reason,
+                )
         except Exception as exc:
             db.rollback()
             summary["failed"] += 1
