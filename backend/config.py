@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     yahoo_volatility_window: int = 252
     yahoo_annualise_vol: bool = False
     yahoo_api_delay_seconds: float = 0.2
+    yahoo_fetch_retries: int = 3
+    yahoo_fetch_retry_delay_seconds: float = 1.0
+    yahoo_max_internal_gap_days: int = 40
 
     class Config:
         env_file = str(_ENV_FILE)
