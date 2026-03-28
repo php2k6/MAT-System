@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../components/Authcontext.jsx";
 import axios from "axios";
 import AuthGate from "../components/Authgate.jsx";
-import Dashboard from "./Dashboard.jsx";
+import Dashboard from "./Dashboard/Dashboard.jsx";
 import toast from "react-hot-toast"; 
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
