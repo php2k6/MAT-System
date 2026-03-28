@@ -7,7 +7,7 @@ import Login from "./pages/Login.jsx";
 import Register from "./pages/Register.jsx";
 import DeployStrategy from "./pages/Deploystrategy.jsx";
 import Footer from "./components/Footer.jsx";
-import Dashboard from "./pages/Dashboard.jsx";
+import Dashboard from "./pages/Dashboard/Dashboard.jsx";
 import AppLayout from "./components/AppLayout.jsx";
 import History from "./pages/History.jsx";
 import Offline from "./pages/Offline.jsx";
