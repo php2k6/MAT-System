@@ -247,10 +247,13 @@ async def live_ws(websocket: WebSocket):
 
                 items = []
                 equity = 0.0
+                db_invested_total = 0.0
                 for row in holdings:
                     qty = int(row.qty or 0)
                     if qty <= 0:
                         continue
+                    avg_price = float(row.avg_price or 0)
+                    db_invested_total += qty * avg_price
                     live = live_map.get(row.ticker)
                     if use_live_prices and live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
                         ltp = float(live["ltp"])
@@ -322,7 +325,7 @@ async def live_ws(websocket: WebSocket):
                     # Fallback when broker snapshot is unavailable.
                     cash = float(strategy.unused_capital or 0)
                     total_value = equity + cash
-                    invested = float(strategy.capital or 0)
+                    invested = db_invested_total
                     pnl = total_value - invested
                     pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
                     equity_summary = equity
