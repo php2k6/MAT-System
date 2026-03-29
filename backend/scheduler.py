@@ -426,10 +426,7 @@ def broker_reconcile_snapshot() -> dict:
                             ticker=ticker,
                             qty=int(p["qty"]),
                             avg_price=float(p["avg_price"]),
-                            ltp=float(p["last_price"]),
-                            market_value=float(p["market_value"]),
-                            pnl=float(p["pnl"]),
-                            pnl_pct=float(p["pnl_pct"]),
+                            last_price=float(p["last_price"]),
                         ))
                     positions_updated += 1
                 else:
