@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     fyers_quotes_chunk_size: int = 50
 
     # MAT engine runtime controls
-    mat_cash_buffer: float = 0.005
+    mat_cash_buffer: float = 0.01
     mat_order_wait_seconds: int = 120
     mat_order_poll_interval_seconds: int = 5
     mat_order_min_interval_seconds: float = 0.11

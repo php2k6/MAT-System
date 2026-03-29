@@ -92,3 +92,7 @@ class DeployStrategyRequest(BaseModel):
 
 class StrategyActionRequest(BaseModel):
     action: str = Field(..., pattern="^(pause|resume|stop|restart)$")
+
+
+class RebalanceHistoryActionRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
