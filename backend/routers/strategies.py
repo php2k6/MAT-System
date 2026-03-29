@@ -23,6 +23,7 @@ from backend.models import (
     RebalancingHistory,
     StockPrice,
     Strategy,
+    Positions,
     User,
 )
 from backend.mat_engine import CASH_BUFFER, MATEngine, _buy_cost, _sell_cost
@@ -1141,14 +1142,102 @@ def trigger_eod_mtm(
 ):
     _ensure_testing_enabled()
     # user dependency keeps endpoint authenticated even though user object is unused.
-    from backend.scheduler import eod_mark_to_market
+    from backend.scheduler import eod_mtm_from_yahoo_prices
 
     _ = user
     logger.info("strategy.testing.eod_mtm trigger user_id=%s", user.user_id)
-    eod_mark_to_market(reconcile_from_broker=True)
+    result = eod_mtm_from_yahoo_prices()
     return {
         "success": True,
-        "message": "Triggered EOD mark-to-market with broker reconciliation",
+        "message": "Triggered EOD MTM valuation from Yahoo-backed stock_price",
+        "result": result,
+    }
+
+
+@router.post("/testing/broker-reconcile")
+def trigger_broker_reconcile(
+    user: User = Depends(get_current_user),
+):
+    _ensure_testing_enabled()
+    from backend.scheduler import broker_reconcile_snapshot
+
+    _ = user
+    logger.info("strategy.testing.broker_reconcile trigger user_id=%s", user.user_id)
+    result = broker_reconcile_snapshot()
+    return {
+        "success": True,
+        "message": "Triggered broker reconciliation snapshot",
+        "result": result,
+    }
+
+
+@router.get("/testing/reconcile-state")
+def get_reconcile_state(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    _ensure_testing_enabled()
+
+    strategy = _deployed_user_strategy(db, user.user_id)
+    if not strategy:
+        return {
+            "success": True,
+            "strategyDeployed": False,
+            "holdings": [],
+            "positions": [],
+            "totals": {"positionsPnl": 0.0},
+        }
+
+    holdings = (
+        db.query(Holdings)
+        .filter(Holdings.strat_id == strategy.strat_id)
+        .order_by(Holdings.ticker.asc())
+        .all()
+    )
+    positions = (
+        db.query(Positions)
+        .filter(Positions.strat_id == strategy.strat_id)
+        .order_by(Positions.ticker.asc())
+        .all()
+    )
+
+    holdings_payload = [
+        {
+            "symbol": h.ticker,
+            "qty": int(h.qty or 0),
+            "avgPrice": float(h.avg_price or 0),
+            "lastPrice": float(h.last_price or 0),
+            "updatedAt": h.updated_at.isoformat() if h.updated_at else None,
+        }
+        for h in holdings
+    ]
+
+    positions_payload = [
+        {
+            "symbol": p.ticker,
+            "qty": int(p.qty or 0),
+            "avgPrice": float(p.avg_price or 0),
+            "ltp": float(p.ltp or 0),
+            "marketValue": float(p.market_value or 0),
+            "pnl": float(p.pnl or 0),
+            "pnlPct": float(p.pnl_pct or 0),
+            "updatedAt": p.updated_at.isoformat() if p.updated_at else None,
+        }
+        for p in positions
+    ]
+
+    total_pnl = sum(float(p.pnl or 0) for p in positions)
+    return {
+        "success": True,
+        "strategyDeployed": True,
+        "strategyId": str(strategy.strat_id),
+        "holdings": holdings_payload,
+        "positions": positions_payload,
+        "totals": {
+            "positionsPnl": round(total_pnl, 2),
+            "holdingsCount": len(holdings_payload),
+            "positionsCount": len(positions_payload),
+        },
     }
 
 
@@ -1160,14 +1249,19 @@ def trigger_yahoo_daily_sync(
     _ensure_testing_enabled()
     # user dependency keeps endpoint authenticated even though user object is unused.
     from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
+    from backend.scheduler import eod_mtm_from_yahoo_prices
 
     _ = user
     logger.info("strategy.testing.yahoo_daily_sync trigger user_id=%s", user.user_id)
-    result = run_yahoo_daily_sync(db)
+    sync_result = run_yahoo_daily_sync(db)
+    mtm_result = eod_mtm_from_yahoo_prices()
     return {
         "success": True,
-        "message": "Triggered Yahoo daily DB sync",
-        "result": result,
+        "message": "Triggered Yahoo daily DB sync + EOD MTM valuation",
+        "result": {
+            "yahooSync": sync_result,
+            "eodMtm": mtm_result,
+        },
     }
 
 
