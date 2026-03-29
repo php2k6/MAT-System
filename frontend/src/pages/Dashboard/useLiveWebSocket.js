@@ -1,7 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { WS_BASE_URL } from "./constants.js";
+import { WS_BASE_URL } from "./constants";
+
 // ─── WEBSOCKET HOOK ───────────────────────────────────────────────────────────
-export function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, onUnauthorized }) {
+export function useLiveWebSocket({
+  enabled,
+  onHoldingsUpdate,
+  onPositionsUpdate,   // ← NEW
+  onSummaryUpdate,
+  onUnauthorized,
+}) {
   const wsRef          = useRef(null);
   const reconnectTimer = useRef(null);
   const unmounted      = useRef(false);
@@ -33,6 +40,11 @@ export function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, o
         case "holdings_update":
           if (Array.isArray(msg.items) && msg.items.length > 0) {
             onHoldingsUpdate(msg.items);
+          }
+          break;
+        case "positions_update":                                  // ← NEW
+          if (Array.isArray(msg.items) && msg.items.length > 0) {
+            onPositionsUpdate(msg.items);
           }
           break;
         case "summary_update":
@@ -82,7 +94,7 @@ export function useLiveWebSocket({ enabled, onHoldingsUpdate, onSummaryUpdate, o
         if (!unmounted.current) connect();
       }, backoffDelay);
     };
-  }, [enabled, onHoldingsUpdate, onSummaryUpdate, onUnauthorized]);
+  }, [enabled, onHoldingsUpdate, onPositionsUpdate, onSummaryUpdate, onUnauthorized]);
 
   useEffect(() => {
     unmounted.current = false;
