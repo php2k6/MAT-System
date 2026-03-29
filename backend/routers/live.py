@@ -18,7 +18,7 @@ from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decode_access_token, decrypt_token
 from backend.core.time_utils import now_ist
 from backend.database import SessionLocal
-from backend.models import BrokerSession, Holdings, Strategy, User
+from backend.models import BrokerSession, Holdings, Positions, Strategy, User
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 logger = logging.getLogger(__name__)
@@ -215,6 +215,7 @@ async def live_ws(websocket: WebSocket):
 
     store = get_live_price_store()
     last_sent: dict[str, float] = {}
+    last_positions_sent: dict[str, dict] = {}
     last_summary_value: float | None = None
 
     try:
@@ -233,7 +234,14 @@ async def live_ws(websocket: WebSocket):
                     .filter(Holdings.strat_id == strategy.strat_id)
                     .all()
                 )
-                tickers = [h.ticker for h in holdings if h.qty and h.qty > 0]
+                positions = (
+                    db.query(Positions)
+                    .filter(Positions.strat_id == strategy.strat_id)
+                    .all()
+                )
+                holding_tickers = [h.ticker for h in holdings if h.qty and h.qty > 0]
+                position_tickers = [p.ticker for p in positions if p.qty and p.qty > 0]
+                tickers = sorted(set(holding_tickers) | set(position_tickers))
                 use_live_prices = _is_market_hours()
                 live_map = store.get_prices(tickers) if use_live_prices else {}
 
@@ -263,6 +271,50 @@ async def live_ws(websocket: WebSocket):
                             "type": "holdings_update",
                             "timestamp": now_ist().isoformat(),
                             "items": items,
+                        }
+                    )
+
+                position_items = []
+                positions_total_pnl = 0.0
+                for p in positions:
+                    qty = int(p.qty or 0)
+                    if qty <= 0:
+                        continue
+                    avg = float(p.avg_price or 0)
+                    live = live_map.get(p.ticker)
+                    if use_live_prices and live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
+                        ltp = float(live["ltp"])
+                    else:
+                        ltp = float(p.ltp or 0)
+
+                    market_value = qty * ltp if ltp > 0 else float(p.market_value or 0)
+                    invested = qty * avg
+                    pnl = market_value - invested
+                    pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
+                    positions_total_pnl += pnl
+
+                    curr = {
+                        "symbol": p.ticker,
+                        "qty": qty,
+                        "avgPrice": round(avg, 2),
+                        "ltp": round(ltp, 2),
+                        "value": round(market_value, 2),
+                        "pnl": round(pnl, 2),
+                        "pnlPct": round(pnl_pct, 2),
+                    }
+                    prev = last_positions_sent.get(p.ticker)
+                    if prev != curr:
+                        last_positions_sent[p.ticker] = curr
+                        position_items.append(curr)
+
+                if position_items:
+                    logger.debug("live.ws positions_update user_id=%s count=%d", user.user_id, len(position_items))
+                    await websocket.send_json(
+                        {
+                            "type": "positions_update",
+                            "timestamp": now_ist().isoformat(),
+                            "items": position_items,
+                            "totalPnl": round(positions_total_pnl, 2),
                         }
                     )
 
@@ -296,6 +348,7 @@ async def live_ws(websocket: WebSocket):
                                 "cash": round(cash, 2),
                                 "equity": round(equity_summary, 2),
                                 "pnl": round(pnl, 2),
+                                "totalPnl": round(positions_total_pnl if positions else pnl, 2),
                                 "pnlPct": round(pnl_pct, 2),
                             },
                         }

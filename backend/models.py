@@ -99,6 +99,7 @@ class Strategy(Base):
     user              = relationship("User",           back_populates="strategies")
     portfolio         = relationship("Portfolio",      back_populates="strategy",        cascade="all, delete-orphan")
     holdings          = relationship("Holdings",       back_populates="strategy",        cascade="all, delete-orphan")
+    positions         = relationship("Positions", back_populates="strategy",      cascade="all, delete-orphan")
     rebalance_history = relationship("RebalanceQueue", back_populates="strategy",        cascade="all, delete-orphan", order_by="RebalanceQueue.queued_at.desc()")
     rebalancing_runs  = relationship("RebalancingHistory", back_populates="strategy", cascade="all, delete-orphan", order_by="RebalancingHistory.started_at.desc()")
 
@@ -121,6 +122,30 @@ class Holdings(Base):
 
     __table_args__ = (
         UniqueConstraint("strat_id", "ticker", name="uq_holdings_strat_ticker"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy Positions (separate from holdings; mirrors broker positions view)
+# ---------------------------------------------------------------------------
+class Positions(Base):
+    __tablename__ = "positions"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    strat_id    = Column(UUID(as_uuid=True), ForeignKey("strategies.strat_id", ondelete="CASCADE"), nullable=False)
+    ticker      = Column(VARCHAR(20), nullable=False)
+    qty         = Column(Integer, nullable=False)
+    avg_price   = Column(Numeric(20, 8), nullable=True)
+    ltp         = Column(Numeric(20, 8), nullable=True)
+    market_value = Column(Numeric(20, 8), nullable=True)
+    pnl         = Column(Numeric(20, 8), nullable=True)
+    pnl_pct     = Column(Numeric(20, 8), nullable=True)
+    updated_at  = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+
+    strategy = relationship("Strategy", back_populates="positions")
+
+    __table_args__ = (
+        UniqueConstraint("strat_id", "ticker", name="uq_positions_strat_ticker"),
     )
 
 

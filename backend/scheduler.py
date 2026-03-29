@@ -6,8 +6,9 @@ APScheduler jobs on IST:
     1) queue_rebalances()       pre-market
     2) drain_rebalance_queue()  mid-market
     3) refresh_live_prices()    interval fallback (only when websocket is not connected)
-    4) eod_mark_to_market()     end-of-day valuation snapshot
-    5) yahoo_daily_sync_job()   optional post-market Yahoo-to-DB stock_price sync
+    4) broker_reconcile_snapshot()  broker cash/holdings reconciliation
+    5) eod_mtm_from_yahoo_prices()  post-market valuation from stock_price DB
+    6) yahoo_daily_sync_job()       optional post-market Yahoo-to-DB stock_price sync
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from dateutil.relativedelta import relativedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.exc import OperationalError
 
 from backend.config import settings
@@ -33,7 +34,7 @@ from backend.core.fyers_funds import extract_available_cash
 from backend.core.time_utils import now_ist
 from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
 from backend.database import SessionLocal
-from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, StockTicker, Strategy
+from backend.models import BrokerSession, Holdings, Portfolio, Positions, RebalanceQueue, StockPrice, StockTicker, Strategy
 from fyers_apiv3 import fyersModel
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,57 @@ def _extract_positions(positions_resp: dict) -> dict[str, dict]:
             "qty": qty,
             "avg_price": avg,
             "last_price": ltp,
+        }
+    return out
+
+
+def _extract_positions_detailed(positions_resp: dict) -> dict[str, dict]:
+    if positions_resp.get("s") != "ok":
+        return {}
+
+    rows = positions_resp.get("netPositions") or positions_resp.get("overall") or []
+    if isinstance(rows, dict):
+        rows = rows.get("netPositions") or rows.get("overall") or []
+    if not isinstance(rows, list):
+        return {}
+
+    out: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        symbol = str(row.get("symbol", ""))
+        ticker = _extract_ticker(symbol)
+        if not ticker:
+            continue
+
+        qty = abs(int(row.get("netQty", row.get("qty", 0)) or 0))
+        if qty <= 0:
+            continue
+
+        avg = float(row.get("netAvg", row.get("avgPrice", row.get("buyAvg", 0))) or 0)
+        ltp = float(row.get("ltp", row.get("netLtp", row.get("lastPrice", 0))) or 0)
+        if ltp <= 0:
+            ltp = avg
+
+        market_value = float(row.get("marketVal", row.get("market_value", 0)) or 0)
+        if market_value <= 0 and ltp > 0:
+            market_value = qty * ltp
+
+        pnl = float(row.get("pl", row.get("pnl", 0)) or 0)
+        if pnl == 0 and avg > 0 and market_value > 0:
+            pnl = market_value - (qty * avg)
+
+        invested = qty * avg if avg > 0 else 0.0
+        pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
+
+        out[ticker] = {
+            "qty": qty,
+            "avg_price": avg,
+            "last_price": ltp,
+            "market_value": market_value,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
         }
     return out
 
@@ -279,16 +331,18 @@ def refresh_live_prices() -> dict:
         db.close()
 
 
-def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
+def broker_reconcile_snapshot() -> dict:
     """
-    End-of-day valuation snapshot:
-    - optional broker reconciliation (cash + holdings) from Fyers
-    - refresh holdings.last_price from latest live cache (fallback existing)
-    - update strategy.market_value
-    - upsert portfolio value for today
+    Broker reconciliation snapshot:
+    - refresh strategy cash from broker funds
+    - refresh Holdings table from broker holdings/positions payload
     """
     db = SessionLocal()
     today = now_ist().date()
+    processed = 0
+    holdings_updated = 0
+    positions_updated = 0
+    skipped = 0
     try:
         strategies = (
             db.query(Strategy)
@@ -296,153 +350,279 @@ def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
             .all()
         )
         if not strategies:
-            return
+            return {
+                "status": "skipped",
+                "reason": "no_strategies",
+                "processed": 0,
+                "holdingsUpdated": 0,
+                "positionsUpdated": 0,
+                "skipped": 0,
+            }
 
         for strat in strategies:
-            skip_snapshot_update = False
-            broker_sync_applied = False
-            broker_equity_override: float | None = None
-            if reconcile_from_broker:
-                fyers = _get_user_fyers(db, strat.user_id)
-                if fyers:
-                    try:
-                        funds_resp = fyers.funds()
-                        holdings_resp = fyers.holdings()
-                        positions_resp = fyers.positions()
+            processed += 1
+            fyers = _get_user_fyers(db, strat.user_id)
+            if not fyers:
+                skipped += 1
+                continue
 
-                        cash = extract_available_cash(funds_resp)
-                        holdings_ok = str(holdings_resp.get("s", "")).lower() == "ok"
-                        positions_ok = str(positions_resp.get("s", "")).lower() == "ok"
+            try:
+                funds_resp = fyers.funds()
+                holdings_resp = fyers.holdings()
+                positions_resp = fyers.positions()
 
-                        broker_holdings = _extract_holdings(holdings_resp)
-                        if not broker_holdings:
-                            broker_holdings = _extract_positions(positions_resp)
+                cash = extract_available_cash(funds_resp)
+                holdings_ok = str(holdings_resp.get("s", "")).lower() == "ok"
+                positions_ok = str(positions_resp.get("s", "")).lower() == "ok"
 
-                        raw_rows = _raw_holdings_rows(holdings_resp)
-                        raw_holdings_count = len(raw_rows)
-                        if raw_holdings_count > 0:
-                            broker_equity_override = _holdings_equity_value(raw_rows)
+                broker_holdings = _extract_holdings(holdings_resp)
+                broker_positions = _extract_positions_detailed(positions_resp)
 
-                        if holdings_ok and raw_holdings_count > 0 and not broker_holdings:
-                            # Broker says holdings exist, but parser produced none.
-                            # Do not risk writing cash-only valuation.
-                            skip_snapshot_update = True
-                            logger.error(
-                                "eod_mark_to_market: holdings parse mismatch strat=%s raw_count=%d parsed_count=%d; skipping snapshot update",
-                                strat.strat_id,
-                                raw_holdings_count,
-                                len(broker_holdings),
-                            )
+                raw_rows = _raw_holdings_rows(holdings_resp)
+                raw_holdings_count = len(raw_rows)
 
-                        if cash is not None:
-                            strat.unused_capital = float(cash)
+                if holdings_ok and raw_holdings_count > 0 and not broker_holdings:
+                    logger.error(
+                        "broker_reconcile_snapshot: holdings parse mismatch strat=%s raw_count=%d parsed_count=%d",
+                        strat.strat_id,
+                        raw_holdings_count,
+                        len(broker_holdings),
+                    )
 
-                        # Replace holdings only when payload intent is clear:
-                        # - raw holdings rows present and parsed successfully, OR
-                        # - raw holdings rows absent (explicitly empty holdings).
-                        can_replace_holdings = (
-                            (raw_holdings_count == 0) or
-                            (raw_holdings_count > 0 and bool(broker_holdings))
-                        )
-                        broker_snapshot_ok = holdings_ok or positions_ok
+                if cash is not None:
+                    strat.unused_capital = float(cash)
 
-                        if broker_snapshot_ok and can_replace_holdings:
-                            db.query(Holdings).filter(Holdings.strat_id == strat.strat_id).delete()
-                            for ticker, p in broker_holdings.items():
-                                db.add(Holdings(
-                                    strat_id=strat.strat_id,
-                                    ticker=ticker,
-                                    qty=int(p["qty"]),
-                                    avg_price=float(p["avg_price"]),
-                                    last_price=float(p["last_price"]),
-                                ))
-                            broker_sync_applied = True
-                        else:
-                            logger.warning(
-                                "eod_mark_to_market: skip holdings replace strat=%s cash_ok=%s holdings_ok=%s positions_ok=%s raw_holdings=%d parsed_holdings=%d",
-                                strat.strat_id,
-                                cash is not None,
-                                holdings_ok,
-                                positions_ok,
-                                raw_holdings_count,
-                                len(broker_holdings),
-                            )
-                    except Exception:
-                        logger.exception(
-                            "eod_mark_to_market: fyers reconciliation failed for strat=%s",
-                            strat.strat_id,
-                        )
+                can_replace_holdings = (
+                    (raw_holdings_count == 0) or
+                    (raw_holdings_count > 0 and bool(broker_holdings))
+                )
+                if holdings_ok and can_replace_holdings:
+                    db.query(Holdings).filter(Holdings.strat_id == strat.strat_id).delete()
+                    for ticker, p in broker_holdings.items():
+                        db.add(Holdings(
+                            strat_id=strat.strat_id,
+                            ticker=ticker,
+                            qty=int(p["qty"]),
+                            avg_price=float(p["avg_price"]),
+                            last_price=float(p["last_price"]),
+                        ))
+                    holdings_updated += 1
+                else:
+                    logger.warning(
+                        "broker_reconcile_snapshot: skip holdings replace strat=%s cash_ok=%s holdings_ok=%s positions_ok=%s raw_holdings=%d parsed_holdings=%d",
+                        strat.strat_id,
+                        cash is not None,
+                        holdings_ok,
+                        positions_ok,
+                        raw_holdings_count,
+                        len(broker_holdings),
+                    )
 
+                if positions_ok:
+                    db.query(Positions).filter(Positions.strat_id == strat.strat_id).delete()
+                    for ticker, p in broker_positions.items():
+                        db.add(Positions(
+                            strat_id=strat.strat_id,
+                            ticker=ticker,
+                            qty=int(p["qty"]),
+                            avg_price=float(p["avg_price"]),
+                            ltp=float(p["last_price"]),
+                            market_value=float(p["market_value"]),
+                            pnl=float(p["pnl"]),
+                            pnl_pct=float(p["pnl_pct"]),
+                        ))
+                    positions_updated += 1
+                else:
+                    logger.warning(
+                        "broker_reconcile_snapshot: skip positions replace strat=%s positions_ok=%s parsed_positions=%d",
+                        strat.strat_id,
+                        positions_ok,
+                        len(broker_positions),
+                    )
+
+                if not (holdings_ok and can_replace_holdings) and not positions_ok:
+                    skipped += 1
+            except Exception:
+                skipped += 1
+                logger.exception(
+                    "broker_reconcile_snapshot: reconciliation failed strat=%s",
+                    strat.strat_id,
+                )
+
+        db.commit()
+        logger.info(
+            "broker_reconcile_snapshot: completed processed=%d updated=%d skipped=%d",
+            processed,
+            holdings_updated + positions_updated,
+            skipped,
+        )
+        return {
+            "status": "ok",
+            "processed": processed,
+            "holdingsUpdated": holdings_updated,
+            "positionsUpdated": positions_updated,
+            "skipped": skipped,
+        }
+    except Exception:
+        db.rollback()
+        logger.exception("broker_reconcile_snapshot: unexpected error")
+        return {
+            "status": "error",
+            "processed": processed,
+            "holdingsUpdated": holdings_updated,
+            "positionsUpdated": positions_updated,
+            "skipped": skipped,
+        }
+    finally:
+        db.close()
+
+
+def eod_mtm_from_yahoo_prices() -> dict:
+    """
+    End-of-day MTM valuation using latest close prices from stock_price
+    (typically refreshed by Yahoo sync).
+    """
+    db = SessionLocal()
+    today = now_ist().date()
+    processed = 0
+    updated = 0
+    skipped = 0
+    try:
+        strategies = (
+            db.query(Strategy)
+            .filter(Strategy.status.in_(["active", "paused"]))
+            .all()
+        )
+        if not strategies:
+            return {"status": "skipped", "reason": "no_strategies", "processed": 0, "updated": 0, "skipped": 0}
+
+        for strat in strategies:
+            processed += 1
             holdings = (
                 db.query(Holdings)
                 .filter(Holdings.strat_id == strat.strat_id)
                 .all()
             )
-
-            if skip_snapshot_update:
-                logger.warning(
-                    "eod_mark_to_market: snapshot update skipped strat=%s to avoid cash-only overwrite",
-                    strat.strat_id,
-                )
+            tickers = [h.ticker for h in holdings if int(h.qty or 0) > 0]
+            if not tickers:
+                cash = float(strat.unused_capital or 0)
+                strat.market_value = cash
+                db.query(Portfolio).filter(
+                    Portfolio.strat_id == strat.strat_id,
+                    Portfolio.date == today,
+                ).delete(synchronize_session=False)
+                db.add(Portfolio(strat_id=strat.strat_id, date=today, value=cash))
+                updated += 1
                 continue
-            tickers = [h.ticker for h in holdings if (h.qty or 0) > 0]
-            live_map = {} if broker_sync_applied else get_live_price_store().get_prices(tickers)
+
+            latest_date_subq = (
+                db.query(
+                    StockPrice.ticker.label("ticker"),
+                    func.max(StockPrice.date).label("max_date"),
+                )
+                .filter(
+                    StockPrice.ticker.in_(tickers),
+                    StockPrice.date <= today,
+                    StockPrice.close.isnot(None),
+                )
+                .group_by(StockPrice.ticker)
+                .subquery()
+            )
+
+            price_rows = (
+                db.query(StockPrice.ticker, StockPrice.close, StockPrice.date)
+                .join(
+                    latest_date_subq,
+                    and_(
+                        StockPrice.ticker == latest_date_subq.c.ticker,
+                        StockPrice.date == latest_date_subq.c.max_date,
+                    ),
+                )
+                .all()
+            )
+            price_map = {r.ticker: float(r.close) for r in price_rows}
 
             equity = 0.0
+            missing = 0
             for h in holdings:
                 qty = int(h.qty or 0)
                 if qty <= 0:
                     continue
-
-                live = live_map.get(h.ticker)
-                if live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
-                    ltp = float(live["ltp"])
-                else:
-                    ltp = float(h.last_price or 0)
-
-                if ltp > 0:
-                    h.last_price = ltp
-                equity += qty * ltp
-
-            # If broker reconciliation returned raw holdings rows, value snapshot
-            # should follow broker holdings valuation (prevents cash-only snapshots).
-            if broker_equity_override is not None:
-                equity = broker_equity_override
+                px = float(price_map.get(h.ticker, 0.0) or 0.0)
+                if px <= 0:
+                    missing += 1
+                    px = float(h.last_price or 0.0)
+                if px > 0:
+                    h.last_price = px
+                    equity += qty * px
 
             cash = float(strat.unused_capital or 0)
             total_value = equity + cash
             strat.market_value = total_value
 
-            # Force-replace today's snapshot so manual triggers always refresh
-            # the current trading date value.
             db.query(Portfolio).filter(
                 Portfolio.strat_id == strat.strat_id,
                 Portfolio.date == today,
             ).delete(synchronize_session=False)
             db.add(Portfolio(strat_id=strat.strat_id, date=today, value=total_value))
 
+            updated += 1
+            logger.info(
+                "eod_mtm_from_yahoo_prices: strat=%s equity=%.2f cash=%.2f total=%.2f tickers=%d missing_prices=%d",
+                strat.strat_id,
+                equity,
+                cash,
+                total_value,
+                len(tickers),
+                missing,
+            )
+
         db.commit()
         logger.info(
-            "eod_mark_to_market: completed for %d strategies reconcile_from_broker=%s",
-            len(strategies),
-            reconcile_from_broker,
+            "eod_mtm_from_yahoo_prices: completed processed=%d updated=%d skipped=%d",
+            processed,
+            updated,
+            skipped,
         )
+        return {
+            "status": "ok",
+            "processed": processed,
+            "updated": updated,
+            "skipped": skipped,
+            "valuationSource": "stock_price_close",
+        }
     except Exception:
         db.rollback()
-        logger.exception("eod_mark_to_market: unexpected error")
+        logger.exception("eod_mtm_from_yahoo_prices: unexpected error")
+        return {
+            "status": "error",
+            "processed": processed,
+            "updated": updated,
+            "skipped": skipped,
+            "valuationSource": "stock_price_close",
+        }
     finally:
         db.close()
+
+
+def eod_mark_to_market(*, reconcile_from_broker: bool = False) -> None:
+    """Backward-compatible wrapper retained for old call sites."""
+    if reconcile_from_broker:
+        broker_reconcile_snapshot()
+    eod_mtm_from_yahoo_prices()
 
 
 def yahoo_daily_sync_job() -> None:
     db = SessionLocal()
     try:
         result = run_yahoo_daily_sync(db)
+        mtm_result = eod_mtm_from_yahoo_prices()
         logger.info(
-            "yahoo_daily_sync_job: status=%s processed=%s summary=%s",
+            "yahoo_daily_sync_job: status=%s processed=%s summary=%s mtm=%s",
             result.get("status"),
             result.get("symbolsProcessed"),
             result.get("summary"),
+            mtm_result,
         )
     except Exception:
         db.rollback()
@@ -669,28 +849,26 @@ def start_scheduler() -> None:
         misfire_grace_time=60,
     )
     _scheduler.add_job(
-        eod_mark_to_market,
+        broker_reconcile_snapshot,
         trigger=CronTrigger(
             hour=int(settings.reconcile_open_hour_ist),
             minute=int(settings.reconcile_open_minute_ist),
             timezone=settings.scheduler_timezone,
             day_of_week="mon-fri",
         ),
-        kwargs={"reconcile_from_broker": True},
-        id="open_reconcile_mark_to_market",
+        id="open_broker_reconcile",
         replace_existing=True,
         misfire_grace_time=3600,
     )
     _scheduler.add_job(
-        eod_mark_to_market,
+        eod_mtm_from_yahoo_prices,
         trigger=CronTrigger(
             hour=int(settings.eod_mtm_hour_ist),
             minute=int(settings.eod_mtm_minute_ist),
             timezone=settings.scheduler_timezone,
             day_of_week="mon-fri",
         ),
-        kwargs={"reconcile_from_broker": True},
-        id="eod_mark_to_market",
+        id="eod_mtm_from_yahoo_prices",
         replace_existing=True,
         misfire_grace_time=3600,
     )
@@ -709,12 +887,14 @@ def start_scheduler() -> None:
         )
     _scheduler.start()
     logger.info(
-        "Scheduler started — queue@%02d:%02d, drain@%02d:%02d, live_prices@%ss, eod_mtm@%02d:%02d, yahoo_sync=%s@%02d:%02d (%s)",
+        "Scheduler started — queue@%02d:%02d, drain@%02d:%02d, live_prices@%ss, broker_reconcile@%02d:%02d, eod_mtm(yahoo)@%02d:%02d, yahoo_sync=%s@%02d:%02d (%s)",
         int(settings.queue_rebalance_hour_ist),
         int(settings.queue_rebalance_minute_ist),
         int(settings.drain_rebalance_hour_ist),
         int(settings.drain_rebalance_minute_ist),
         int(settings.live_price_refresh_seconds),
+        int(settings.reconcile_open_hour_ist),
+        int(settings.reconcile_open_minute_ist),
         int(settings.eod_mtm_hour_ist),
         int(settings.eod_mtm_minute_ist),
         bool(settings.enable_yahoo_daily_sync),

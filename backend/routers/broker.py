@@ -327,4 +327,14 @@ def broker_callback(
         # Keep callback success even if feed startup fails; scheduler polling remains fallback.
         logger.warning("broker_callback: market feed startup failed: %s", exc)
 
+    # Reconcile broker snapshot immediately after callback so holdings/positions
+    # are fresh without waiting for the next scheduled reconcile window.
+    try:
+        from backend.scheduler import broker_reconcile_snapshot
+
+        result = broker_reconcile_snapshot()
+        logger.info("broker_callback: broker_reconcile_snapshot result=%s", result)
+    except Exception as exc:
+        logger.warning("broker_callback: immediate broker reconcile failed: %s", exc)
+
     return RedirectResponse(f"{settings.frontend_origin}/dashboard?status=connected")
