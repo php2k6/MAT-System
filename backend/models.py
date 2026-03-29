@@ -136,10 +136,7 @@ class Positions(Base):
     ticker      = Column(VARCHAR(20), nullable=False)
     qty         = Column(Integer, nullable=False)
     avg_price   = Column(Numeric(20, 8), nullable=True)
-    ltp         = Column(Numeric(20, 8), nullable=True)
-    market_value = Column(Numeric(20, 8), nullable=True)
-    pnl         = Column(Numeric(20, 8), nullable=True)
-    pnl_pct     = Column(Numeric(20, 8), nullable=True)
+    last_price  = Column(Numeric(20, 8), nullable=True)
     updated_at  = Column(TIMESTAMP, server_default=func.now(), nullable=False)
 
     strategy = relationship("Strategy", back_populates="positions")

@@ -18,6 +18,7 @@ from backend.config import settings
 from backend.database import get_db
 from backend.models import (
     BrokerSession,
+    Holdings,
     RebalanceOrderLeg,
     RebalanceQueue,
     RebalancingHistory,
@@ -1212,21 +1213,31 @@ def get_reconcile_state(
         for h in holdings
     ]
 
-    positions_payload = [
-        {
-            "symbol": p.ticker,
-            "qty": int(p.qty or 0),
-            "avgPrice": float(p.avg_price or 0),
-            "ltp": float(p.ltp or 0),
-            "marketValue": float(p.market_value or 0),
-            "pnl": float(p.pnl or 0),
-            "pnlPct": float(p.pnl_pct or 0),
-            "updatedAt": p.updated_at.isoformat() if p.updated_at else None,
-        }
-        for p in positions
-    ]
+    positions_payload = []
+    total_pnl = 0.0
+    for p in positions:
+        qty = int(p.qty or 0)
+        avg_price = float(p.avg_price or 0)
+        ltp = float(p.last_price or 0)
+        market_value = qty * ltp
+        invested = qty * avg_price
+        pnl = market_value - invested
+        pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
+        total_pnl += pnl
 
-    total_pnl = sum(float(p.pnl or 0) for p in positions)
+        positions_payload.append(
+            {
+                "symbol": p.ticker,
+                "qty": qty,
+                "avgPrice": avg_price,
+                "lastPrice": ltp,
+                "ltp": ltp,
+                "marketValue": market_value,
+                "pnl": pnl,
+                "pnlPct": pnl_pct,
+                "updatedAt": p.updated_at.isoformat() if p.updated_at else None,
+            }
+        )
     return {
         "success": True,
         "strategyDeployed": True,

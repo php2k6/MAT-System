@@ -284,10 +284,12 @@ async def live_ws(websocket: WebSocket):
                     live = live_map.get(p.ticker)
                     if use_live_prices and live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
                         ltp = float(live["ltp"])
+                        ts = int(live.get("ts") or 0)
                     else:
-                        ltp = float(p.ltp or 0)
+                        ltp = float(p.last_price or 0)
+                        ts = 0
 
-                    market_value = qty * ltp if ltp > 0 else float(p.market_value or 0)
+                    market_value = qty * ltp
                     invested = qty * avg
                     pnl = market_value - invested
                     pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
@@ -301,6 +303,7 @@ async def live_ws(websocket: WebSocket):
                         "value": round(market_value, 2),
                         "pnl": round(pnl, 2),
                         "pnlPct": round(pnl_pct, 2),
+                        "ts": ts,
                     }
                     prev = last_positions_sent.get(p.ticker)
                     if prev != curr:

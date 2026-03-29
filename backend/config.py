@@ -68,8 +68,8 @@ class Settings(BaseSettings):
     market_close_minute_ist: int = 30
 
     # EOD mark-to-market scheduler
-    eod_mtm_hour_ist: int = 15
-    eod_mtm_minute_ist: int = 40
+    eod_mtm_hour_ist: int = 19
+    eod_mtm_minute_ist: int = 15
 
     # Broker reconciliation snapshots (IST)
     # Runs a full holdings + cash sync from Fyers and updates strategy/portfolio.
@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     reconcile_open_minute_ist: int = 20
 
     # Yahoo daily DB sync
-    enable_yahoo_daily_sync: bool = False
+    enable_yahoo_daily_sync: bool = True
     yahoo_daily_sync_hour_ist: int = 19
     yahoo_daily_sync_minute_ist: int = 0
     yahoo_reference_ticker: str = "NIFTYBEES.NS"

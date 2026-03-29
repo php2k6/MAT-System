@@ -14,7 +14,7 @@ from backend.core.live_prices import get_live_price_store
 from backend.core.deps import get_current_user
 from backend.core.security import decrypt_token
 from backend.database import get_db
-from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, StockPrice, StockTicker, Strategy, User
+from backend.models import BrokerSession, Holdings, Portfolio, Positions, RebalanceQueue, StockPrice, StockTicker, Strategy, User
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 logger = logging.getLogger(__name__)
@@ -188,6 +188,7 @@ def get_portfolio(
             "strategy": None,
             "summary": None,
             "holdings": [],
+            "positions": [],
         }
 
     latest_price_date = db.query(func.max(StockPrice.date)).scalar()
@@ -215,6 +216,12 @@ def get_portfolio(
         db.query(Holdings)
         .filter(Holdings.strat_id == strategy.strat_id)
         .order_by(Holdings.ticker.asc())
+        .all()
+    )
+    position_rows = (
+        db.query(Positions)
+        .filter(Positions.strat_id == strategy.strat_id)
+        .order_by(Positions.ticker.asc())
         .all()
     )
     logger.info("portfolio.get strategy=%s holdings=%d", strategy.strat_id, len(holding_rows))
@@ -268,6 +275,51 @@ def get_portfolio(
                 "dayChange": round(day_change, 2),
                 "priceSource": price_source,
                 "priceTs": price_ts,
+            }
+        )
+
+    positions_payload = []
+    live_position_prices = store.get_prices([p.ticker for p in position_rows]) if (position_rows and use_live_prices) else {}
+    for p in position_rows:
+        qty = int(p.qty or 0)
+        avg_price = _num(p.avg_price)
+
+        live = live_position_prices.get(p.ticker)
+        if use_live_prices and live and not live.get("is_stale") and _num(live.get("ltp")) > 0:
+            ltp = _num(live.get("ltp"))
+            price_source = "live"
+            price_ts = int(live.get("ts") or 0)
+        else:
+            if use_live_prices:
+                ltp = prices_by_ticker.get(p.ticker, {}).get("ltp", _num(p.last_price))
+                price_source = "snapshot"
+            else:
+                ltp = _num(p.last_price) or prices_by_ticker.get(p.ticker, {}).get("ltp", 0.0)
+                price_source = "db-positions"
+            price_ts = None
+
+        market_value = qty * ltp
+        invested = qty * avg_price
+        pnl = market_value - invested
+        pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+
+        day_ret = prices_by_ticker.get(p.ticker, {}).get("daily_return", 0.0)
+        day_change = day_ret * 100 if abs(day_ret) <= 1 else day_ret
+
+        positions_payload.append(
+            {
+                "symbol": p.ticker,
+                "name": names_by_ticker.get(p.ticker, p.ticker),
+                "qty": qty,
+                "avgPrice": round(avg_price, 2),
+                "ltp": round(ltp, 2),
+                "marketValue": round(market_value, 2),
+                "pnl": round(pnl, 2),
+                "pnlPct": round(pnl_pct, 2),
+                "dayChange": round(day_change, 2),
+                "priceSource": price_source,
+                "priceTs": price_ts,
+                "updatedAt": p.updated_at.isoformat() if p.updated_at else None,
             }
         )
 
@@ -332,6 +384,7 @@ def get_portfolio(
             "priceSource": summary_price_source,
         },
         "holdings": holdings_payload,
+        "positions": positions_payload,
     }
 
 
