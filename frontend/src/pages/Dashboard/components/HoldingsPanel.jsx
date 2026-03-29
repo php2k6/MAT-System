@@ -1,4 +1,4 @@
-import { MONO } from "../constants.js";
+import { MONO, SYS } from "../constants.js";
 import { fmt, fmtCompact } from "../formatters.js";
 import { PriceSourceBadge } from "./StatCard.jsx";
 
@@ -18,7 +18,6 @@ function EmptyRow({ message }) {
 }
 
 // ─── SHARED POSITIONS TABLE ───────────────────────────────────────────────────
-// Used by both HoldingsPanel and PositionsPanel — identical columns.
 function PositionsTable({ items, emptyMessage }) {
   return (
     <div style={{ overflowX: "auto" }}>
@@ -39,7 +38,6 @@ function PositionsTable({ items, emptyMessage }) {
             ? <EmptyRow message={emptyMessage} />
             : (items ?? []).map(h => {
               const pos = h.pnl >= 0;
-
               const dc = Number(h.dayChange);
               const dayChange = Number.isFinite(dc) ? dc : 0;
               const dayPos = dayChange >= 0;
@@ -103,8 +101,12 @@ export function HoldingsPanel({ holdings }) {
 }
 
 // ─── POSITIONS PANEL ──────────────────────────────────────────────────────────
-// Shows intraday positions (today's buys/sells) from the broker.
 export function PositionsPanel({ positions }) {
+  // Aggregate P&L from all position rows — stays in sync with live LTP updates
+  const totalPnl = (positions ?? []).reduce((sum, p) => sum + (Number(p.pnl) || 0), 0);
+  const isPos    = totalPnl >= 0;
+  const hasItems = (positions ?? []).length > 0;
+
   return (
     <div className="db-panel">
       <div className="db-panel-header">
@@ -118,6 +120,27 @@ export function PositionsPanel({ positions }) {
           </span>
         </div>
       </div>
+
+      {/* ── Positions P&L summary bar — only shown when there are rows ── */}
+      {hasItems && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 16,
+          padding: "10px 18px",
+          borderBottom: "1px solid #f0f0f0",
+          background: isPos ? "#f0fdf4" : "#fef2f2",
+        }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "#999", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: SYS }}>
+            Total P&L
+          </span>
+          <span style={{ fontSize: 15, fontWeight: 700, fontFamily: MONO, color: isPos ? "#1b6f3e" : "#c62828" }}>
+            {isPos ? "+" : ""}{fmtCompact(totalPnl)}
+          </span>
+          <span style={{ fontSize: 11, fontFamily: MONO, color: isPos ? "#1b6f3e" : "#c62828" }}>
+            {fmt(totalPnl)}
+          </span>
+        </div>
+      )}
+
       <PositionsTable
         items={positions}
         emptyMessage="No open positions today."
