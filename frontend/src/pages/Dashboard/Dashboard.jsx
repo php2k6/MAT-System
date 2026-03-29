@@ -326,7 +326,11 @@ export default function Dashboard() {
   const currentValueForSnapshot = Number(summary?.currentValue ?? 0);
  
   // Day-zero: strategy deployed but no trades yet
-  const isDayZero = strategyDeployed && (holdings?.length === 0) && (summary?.invested === 0);
+  const hasNoHoldings = (holdings?.length ?? 0) === 0;
+  const deployDateMs = new Date(strategy?.startingDate).getTime(); // change field if needed
+  const isFutureDeployDate = Number.isFinite(deployDateMs) && deployDateMs > Date.now();
+
+  const isDayZero = !!strategyDeployed && hasNoHoldings && isFutureDeployDate;
  
   return (
     <>
