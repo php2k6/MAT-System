@@ -215,7 +215,7 @@ async def live_ws(websocket: WebSocket):
 
     store = get_live_price_store()
     last_sent: dict[str, float] = {}
-    last_positions_sent: dict[str, dict] = {}
+    last_positions_sent: dict[str, float] = {}
     last_summary_value: float | None = None
 
     try:
@@ -295,20 +295,10 @@ async def live_ws(websocket: WebSocket):
                     pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
                     positions_total_pnl += pnl
 
-                    curr = {
-                        "symbol": p.ticker,
-                        "qty": qty,
-                        "avgPrice": round(avg, 2),
-                        "ltp": round(ltp, 2),
-                        "value": round(market_value, 2),
-                        "pnl": round(pnl, 2),
-                        "pnlPct": round(pnl_pct, 2),
-                        "ts": ts,
-                    }
-                    prev = last_positions_sent.get(p.ticker)
-                    if prev != curr:
-                        last_positions_sent[p.ticker] = curr
-                        position_items.append(curr)
+                    prev_ltp = last_positions_sent.get(p.ticker)
+                    if prev_ltp != ltp:
+                        last_positions_sent[p.ticker] = ltp
+                        position_items.append({"symbol": p.ticker, "ltp": round(ltp, 2), "ts": ts})
 
                 if position_items:
                     logger.debug("live.ws positions_update user_id=%s count=%d", user.user_id, len(position_items))
@@ -317,7 +307,6 @@ async def live_ws(websocket: WebSocket):
                             "type": "positions_update",
                             "timestamp": now_ist().isoformat(),
                             "items": position_items,
-                            "totalPnl": round(positions_total_pnl, 2),
                         }
                     )
 
