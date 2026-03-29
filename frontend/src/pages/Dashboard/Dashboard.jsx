@@ -471,11 +471,11 @@ export default function Dashboard() {
                     delay="0.04s"
                   />
                   <StatCard
-                    label="Current Value"
-                    value={fmtCompact(summary.currentValue)}
+                    label="Equity Value"
+                    value={fmtCompact(summary.equity)}
                     sub={
                       <>
-                        {fmt(summary.currentValue)}
+                        {fmt(summary.equity)}
                         <PriceSourceBadge source={summary.priceSource} />
                       </>
                     }
