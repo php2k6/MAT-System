@@ -196,6 +196,40 @@ class RebalancingHistory(Base):
     strategy   = relationship("Strategy", back_populates="rebalancing_runs")
     queue_entry = relationship("RebalanceQueue", back_populates="history_runs")
     user       = relationship("User", back_populates="rebalancing_history")
+    order_legs = relationship("RebalanceOrderLeg", back_populates="history", cascade="all, delete-orphan")
+
+
+# ---------------------------------------------------------------------------
+# Rebalance Order Legs (one row per intended execution leg)
+# ---------------------------------------------------------------------------
+class RebalanceOrderLeg(Base):
+    __tablename__ = "rebalance_order_legs"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    history_id      = Column(UUID(as_uuid=True), ForeignKey("rebalancing_history.id", ondelete="CASCADE"), nullable=False)
+    strat_id        = Column(UUID(as_uuid=True), ForeignKey("strategies.strat_id", ondelete="CASCADE"), nullable=False)
+    user_id         = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+
+    phase           = Column(VARCHAR(10), nullable=False)   # sell | buy
+    side            = Column(VARCHAR(4), nullable=False)    # SELL | BUY
+    symbol          = Column(VARCHAR(20), nullable=False)
+
+    requested_qty   = Column(Integer, nullable=False)
+    filled_qty      = Column(Integer, nullable=False, default=0)
+    remaining_qty   = Column(Integer, nullable=False, default=0)
+
+    status          = Column(VARCHAR(24), nullable=False, default="planned")
+    broker_order_id = Column(VARCHAR(80), nullable=True)
+    attempt_no      = Column(SmallInteger, nullable=False, default=1)
+
+    error_code      = Column(VARCHAR(64), nullable=True)
+    error_message   = Column(Text, nullable=True)
+    is_retryable    = Column(Boolean, nullable=False, default=True)
+
+    created_at      = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    updated_at      = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    history         = relationship("RebalancingHistory", back_populates="order_legs")
 
 
 # ---------------------------------------------------------------------------

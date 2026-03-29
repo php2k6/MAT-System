@@ -21,14 +21,12 @@ Full execution flow
       b. trims  = held stocks where current_qty > target_qty
       c. LC check: if ANY sell candidate is in LC → SKIP entire rebalance
       d. Place market SELL orders (exits first, then trims)
-      e. Poll fill confirmation (up to ORDER_WAIT_SECS)
-      f. Recompute cash from actual fill prices
+    e. Socket-first fill confirmation (polling fallback)
 10. BUY PHASE
-      a. Build buy list (new entries + top-ups) after applying actual sells
+    a. Build buy list from fixed initial target quantities (single-shot plan)
       b. Final UC recheck per stock; skip UC stocks
-      c. Size quantities with prev-day close; cap to available cash
-      d. Place market BUY orders
-      e. Poll fill confirmation
+    c. Place market BUY IOC orders
+    d. Socket-first fill confirmation (polling fallback)
 11. DB UPDATE (atomic flush; committed by caller — scheduler)
       a. Rebuild Holdings from analytical tracking (no extra Fyers call needed)
       b. Update Strategy.market_value / unused_capital / buffer_capital
@@ -39,11 +37,12 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 import pandas as pd
@@ -54,7 +53,16 @@ from backend.config import settings
 from backend.core.fyers_funds import extract_available_cash
 from backend.core.security import decrypt_token
 from backend.core.time_utils import now_ist
-from backend.models import BrokerSession, Holdings, Portfolio, RebalanceQueue, RebalancingHistory, StockPrice, Strategy
+from backend.models import (
+    BrokerSession,
+    Holdings,
+    Portfolio,
+    RebalanceOrderLeg,
+    RebalanceQueue,
+    RebalancingHistory,
+    StockPrice,
+    Strategy,
+)
 
 logger = logging.getLogger(__name__)
 rebalance_logger = logging.getLogger("backend.rebalance")
@@ -160,6 +168,12 @@ class MATEngine:
         self.strategy: Strategy = queue_entry.strategy
         self.db       = db
         self._last_order_time: float = 0.0   # tracks last order placement for rate-limit
+        self._access_token: str | None = None
+        self._order_socket = None
+        self._order_socket_connected = False
+        self._order_socket_last_msg_ts: float | None = None
+        self._socket_order_updates: dict[str, dict] = {}
+        self._socket_lock = threading.Lock()
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
@@ -184,9 +198,16 @@ class MATEngine:
 
         def _done(result: RebalanceResult, *, post_cash: float | None = None, post_total: float | None = None,
                   post_holdings: dict[str, dict] | None = None, summary: dict | None = None) -> RebalanceResult:
-            status = "done" if result.success else ("skipped" if result.skipped else "failed")
+            if result.details.get("historyStatus"):
+                status = str(result.details["historyStatus"])
+            elif result.success:
+                status = "action_required" if self._has_action_required(order_events) else "completed"
+            elif result.skipped:
+                status = "skipped"
+            else:
+                status = "action_required" if order_events else "failed"
             try:
-                self._record_rebalancing_history(
+                history_row = self._record_rebalancing_history(
                     status=status,
                     reason=result.reason,
                     started_at=started_at_ist,
@@ -203,6 +224,7 @@ class MATEngine:
                         **(summary or {}),
                     },
                 )
+                self._record_order_legs(history_row.id, order_events)
             except Exception:
                 logger.exception("MATEngine: failed to persist rebalancing history strat=%s", sid)
 
@@ -220,6 +242,7 @@ class MATEngine:
                     "orders": order_events,
                 }, ensure_ascii=True),
             )
+            self._close_order_socket()
             return result
 
         # ── 1. Broker auth ────────────────────────────────────────────────────
@@ -227,6 +250,9 @@ class MATEngine:
             fyers = self._get_fyers()
         except RuntimeError as e:
             return _done(RebalanceResult(skipped=True, reason=str(e)))
+
+        socket_connected = self._ensure_order_socket_connected()
+        logger.info("MATEngine: order socket connected=%s strat=%s", socket_connected, sid)
 
         # ── 2. Current DB holdings + LTP ─────────────────────────────────────
         # Read what we own from DB (our tracked state, strategy-scoped)
@@ -325,13 +351,40 @@ class MATEngine:
 
         target_set = set(target_tickers)
 
-        # ── 9. SELL PHASE ─────────────────────────────────────────────────────
-        #
-        # Pre-sell target qty is computed here purely to determine which
-        # held positions need trimming.  Actual post-sell sizing is done in
-        # the buy phase using fresh post-sell cash (see step 11).
-        #
-        alloc_pre = working_capital / len(target_tickers)
+        # ── 9. Build fixed target qty plan once (single transaction model) ───
+        alloc_plan = working_capital / len(target_tickers)
+        target_qty_plan: dict[str, int] = {}
+        for t in target_tickers:
+            close = float(prev_close.get(t, 0) or 0)
+            target_qty_plan[t] = int(alloc_plan / close) if close > 0 else 0
+
+        base_cost = sum(
+            target_qty_plan[t] * float(prev_close.get(t, 0) or 0)
+            for t in target_tickers
+            if float(prev_close.get(t, 0) or 0) > 0
+        )
+        residual = working_capital - base_cost
+
+        remainders = [
+            (t, alloc_plan - target_qty_plan[t] * float(prev_close.get(t, 0) or 0))
+            for t in target_tickers
+            if float(prev_close.get(t, 0) or 0) > 0
+        ]
+        remainders.sort(key=lambda x: x[1], reverse=True)
+        for t, _ in remainders:
+            close = float(prev_close.get(t, 0) or 0)
+            if close > 0 and residual >= close:
+                target_qty_plan[t] += 1
+                residual -= close
+
+        logger.info(
+            "MATEngine: fixed plan built tickers=%d planned_notional=%.2f residual=%.2f",
+            len(target_qty_plan),
+            float(base_cost),
+            float(residual),
+        )
+
+        # ── 10. SELL PHASE ────────────────────────────────────────────────────
 
         sells_exit: dict[str, int] = {}   # ticker → full-exit qty
         sells_trim: dict[str, int] = {}   # ticker → trim qty
@@ -342,7 +395,7 @@ class MATEngine:
             if ticker not in target_set:
                 sells_exit[ticker] = held["qty"]
             else:
-                pre_target_qty = int(alloc_pre / prev_close[ticker])
+                pre_target_qty = int(target_qty_plan.get(ticker, 0))
                 if held["qty"] > pre_target_qty:
                     trim_qty = held["qty"] - pre_target_qty
                     if trim_qty > 0:
@@ -354,6 +407,17 @@ class MATEngine:
             if self._is_lc(all_quotes.get(t, {}))
         ]
         if lc_tickers:
+            for t in lc_tickers:
+                qty = int((sells_exit.get(t) or sells_trim.get(t) or 0))
+                order_events.append({
+                    "phase": "sell",
+                    "ticker": t,
+                    "requestedQty": qty,
+                    "status": "skipped_lc",
+                    "errorCode": "LC_BLOCK",
+                    "error": "Lower-circuit guard blocked sell leg",
+                    "isRetryable": True,
+                })
             return _done(RebalanceResult(
                 skipped=True,
                 reason="LC_DETECTED",
@@ -407,7 +471,7 @@ class MATEngine:
                     ticker, fill["filled_qty"], fill["traded_price"], fill.get("status", "?"),
                 )
 
-        # ── 10. Post-sell cash refresh ────────────────────────────────────────
+        # ── 11. Post-sell cash refresh (for logging/reconciliation only) ─────
         try:
             actual_cash = self._get_cash(fyers)
         except RuntimeError as e:
@@ -415,102 +479,53 @@ class MATEngine:
 
         logger.info("MATEngine: post-sell actual_cash=%.2f", actual_cash)
 
-        # ── 11. BUY PHASE — greedy allocation on actual cash ──────────────────
-        #
+        # ── 12. BUY PHASE — fixed qty from initial plan (no re-sizing) ───────
         # Analytical post-sell current quantities (strategy-scoped)
         current_qty: dict[str, int] = {t: v["qty"] for t, v in db_holdings.items()}
         for ticker, fill in sell_fills.items():
             current_qty[ticker] = max(0, current_qty.get(ticker, 0) - fill["filled_qty"])
 
-        # Greedy equal-weight sizing from actual post-sell cash
-        n_final    = len(target_tickers)
-        buy_budget = actual_cash * (1 - CASH_BUFFER)
-        alloc_post = buy_budget / n_final
-
-        # Base quantities: floor(alloc / prev_close)
-        base_qty: dict[str, int] = {}
-        for t in target_tickers:
-            close = prev_close.get(t, 0)
-            base_qty[t] = int(alloc_post / close) if close > 0 else 0
-
-        # Fractional-remainder second pass:
-        # Sort by (alloc mod prev_close) descending → award +1 share while residual allows
-        base_cost = sum(base_qty[t] * prev_close[t] for t in target_tickers if prev_close.get(t, 0) > 0)
-        residual  = buy_budget - base_cost
-
-        remainders = [
-            (t, alloc_post - base_qty[t] * prev_close[t])
-            for t in target_tickers
-            if prev_close.get(t, 0) > 0
-        ]
-        remainders.sort(key=lambda x: x[1], reverse=True)
-
-        greedy_qty = dict(base_qty)
-        for t, _rem in remainders:
-            close = prev_close[t]
-            if residual >= close:
-                greedy_qty[t] += 1
-                residual -= close
-
-        # Build buy list: greedy_qty[t] - current_qty[t] (positive diff only)
+        # Build buy list directly from fixed target plan (positive diff only)
         buy_order_map: dict[str, str] = {}    # ticker → order_id
         buy_order_qty: dict[str, int] = {}    # ticker → qty attempted
-        remaining_buy_cash = buy_budget
 
         for t in target_tickers:
-            diff = greedy_qty.get(t, 0) - current_qty.get(t, 0)
+            diff = int(target_qty_plan.get(t, 0)) - current_qty.get(t, 0)
             if diff <= 0:
                 continue
             # Final UC safety check at buy time
             q = all_quotes.get(t)
             if q and self._is_uc(q):
                 logger.info("MATEngine: BUY skipped — %s still UC at buy time", t)
+                order_events.append({
+                    "phase": "buy",
+                    "ticker": t,
+                    "requestedQty": int(diff),
+                    "status": "skipped_uc",
+                    "errorCode": "UC_BLOCK",
+                    "error": "Stock is at upper circuit",
+                    "isRetryable": True,
+                })
                 continue
 
-            # Cash-drag aware sizing for market orders:
-            # cap desired qty by estimated gross + buy-side charges.
-            est_price = max(
-                float(all_quotes.get(t, {}).get("ltp", 0) or 0),
-                float(prev_close.get(t, 0) or 0),
-            )
-            if est_price <= 0:
-                logger.info("MATEngine: BUY skipped — %s has no usable price", t)
-                continue
-
-            max_affordable = _max_shares(remaining_buy_cash, est_price)
-            if max_affordable <= 0:
-                logger.info("MATEngine: BUY skipped — insufficient cash for %s", t)
-                continue
-
-            capped_qty = min(diff, max_affordable)
-            if capped_qty <= 0:
-                continue
-
-            est_gross = capped_qty * est_price
-            est_outflow = est_gross + _buy_cost(est_gross)
-            if est_outflow > remaining_buy_cash:
-                logger.info("MATEngine: BUY skipped — outflow exceeds remaining cash for %s", t)
-                continue
-
-            remaining_buy_cash -= est_outflow
-            buy_order_qty[t] = capped_qty
+            buy_order_qty[t] = int(diff)
             try:
-                oid = self._place_order(fyers, t, side=1, qty=capped_qty)
+                oid = self._place_order(fyers, t, side=1, qty=int(diff))
                 buy_order_map[t] = oid
                 order_events.append({
                     "phase": "buy",
                     "ticker": t,
-                    "requestedQty": int(capped_qty),
+                    "requestedQty": int(diff),
                     "orderId": oid,
                     "status": "placed",
                 })
-                logger.info("MATEngine: BUY placed %s qty=%d oid=%s", t, capped_qty, oid)
+                logger.info("MATEngine: BUY placed %s qty=%d oid=%s", t, int(diff), oid)
             except Exception as e:
                 # Non-fatal: log and skip; continue with remaining buys
                 order_events.append({
                     "phase": "buy",
                     "ticker": t,
-                    "requestedQty": int(capped_qty),
+                    "requestedQty": int(diff),
                     "status": "placement_failed",
                     "error": str(e),
                 })
@@ -537,7 +552,7 @@ class MATEngine:
                     ticker, fill["filled_qty"], fill["traded_price"], fill.get("status", "?"),
                 )
 
-        # ── 12. Rebuild holdings state (analytical) ───────────────────────────
+        # ── 13. Rebuild holdings state (analytical) ───────────────────────────
         # Apply sell fills to db_holdings
         new_holdings: dict[str, dict] = {
             t: {"qty": v["qty"], "avg_price": v["avg_price"]}
@@ -605,8 +620,15 @@ class MATEngine:
             "MATEngine: DONE strat=%s final_value=%.2f cash=%.2f n_holdings=%d",
             sid, final_total, final_cash, len(new_holdings),
         )
+        has_action_required = self._has_action_required(order_events)
         return _done(
-            RebalanceResult(success=True),
+            RebalanceResult(
+                success=True,
+                reason="ACTION_REQUIRED" if has_action_required else "",
+                details={
+                    "historyStatus": "action_required" if has_action_required else "completed",
+                },
+            ),
             post_cash=float(final_cash),
             post_total=float(final_total),
             post_holdings=post_holdings_snapshot,
@@ -616,6 +638,7 @@ class MATEngine:
                 "sellTrims": sells_trim,
                 "buyAttempted": buy_order_qty,
                 "ucSkipped": uc_skipped,
+                "actionRequired": has_action_required,
             },
         )
 
@@ -634,6 +657,7 @@ class MATEngine:
         if not session:
             raise RuntimeError("NO_BROKER_SESSION")
         token = decrypt_token(session.access_token_encrypted)
+        self._access_token = token
         Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
         return fyersModel.FyersModel(
             client_id=settings.fyers_app_id,
@@ -731,7 +755,7 @@ class MATEngine:
             "type":         2,           # market order
             "side":         side,
             "productType":  "CNC",
-            "validity":     "DAY",
+            "validity":     "IOC",
             "offlineOrder": False,
             "stopPrice":    0,
             "limitPrice":   0,
@@ -742,54 +766,323 @@ class MATEngine:
         self._last_order_time = time.time()
         return resp["id"]
 
+    def _ensure_order_socket_connected(self) -> bool:
+        if self._order_socket is not None and self._order_socket_connected:
+            return True
+        if not self._access_token:
+            logger.warning("MATEngine: order socket skipped (missing access token)")
+            return False
+
+        try:
+            from fyers_apiv3.FyersWebsocket.order_ws import FyersOrderSocket
+        except Exception as exc:
+            logger.warning("MATEngine: order socket import failed, using polling fallback: %s", exc)
+            return False
+
+        self._socket_order_updates = {}
+        self._order_socket_last_msg_ts = None
+        self._order_socket_connected = False
+
+        def _on_connect():
+            self._order_socket_connected = True
+            logger.info("MATEngine: order socket connected")
+            rebalance_logger.info(
+                "event=order_socket_connect payload=%s",
+                json.dumps({
+                    "stratId": str(self.strategy.strat_id),
+                    "queueId": str(self.entry.id) if getattr(self.entry, "id", None) else None,
+                }, ensure_ascii=True),
+            )
+            try:
+                if self._order_socket:
+                    self._order_socket.subscribe(data_type="OnOrders,OnTrades")
+                    self._order_socket.keep_running()
+                    logger.info("MATEngine: order socket subscribed data_type=OnOrders,OnTrades")
+            except Exception as exc:
+                logger.warning("MATEngine: order socket subscribe failed: %s", exc)
+
+        def _on_close(msg):
+            self._order_socket_connected = False
+            logger.warning("MATEngine: order socket closed: %s", msg)
+
+        def _on_error(msg):
+            logger.warning("MATEngine: order socket error: %s", msg)
+
+        def _on_orders(message):
+            self._ingest_order_socket_message(message, source="orders")
+
+        def _on_trades(message):
+            self._ingest_order_socket_message(message, source="trades")
+
+        try:
+            self._order_socket = FyersOrderSocket(
+                access_token=self._access_token,
+                log_path=settings.log_dir,
+                on_orders=_on_orders,
+                on_trades=_on_trades,
+                on_error=_on_error,
+                on_connect=_on_connect,
+                on_close=_on_close,
+                reconnect=True,
+            )
+            self._order_socket.connect()
+
+            wait_deadline = time.time() + 3.0
+            while time.time() < wait_deadline:
+                if self._order_socket_connected:
+                    break
+                try:
+                    if self._order_socket and bool(self._order_socket.is_connected()):
+                        self._order_socket_connected = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.1)
+        except Exception as exc:
+            logger.warning("MATEngine: order socket connect failed, using polling fallback: %s", exc)
+            self._order_socket_connected = False
+            self._order_socket = None
+
+        return bool(self._order_socket_connected)
+
+    def _close_order_socket(self) -> None:
+        socket = self._order_socket
+        self._order_socket = None
+        self._order_socket_connected = False
+        if socket:
+            try:
+                socket.close_connection()
+                logger.info("MATEngine: order socket closed")
+            except Exception as exc:
+                logger.warning("MATEngine: order socket close failed: %s", exc)
+
+    def _ingest_order_socket_message(self, message: Any, source: str) -> None:
+        updates = self._extract_order_updates(message)
+        now_ts = time.time()
+        self._order_socket_last_msg_ts = now_ts
+
+        with self._socket_lock:
+            for oid, upd in updates.items():
+                prev = self._socket_order_updates.get(oid) or {}
+                merged = {**prev, **upd}
+                merged["updated_at"] = now_ts
+                self._socket_order_updates[oid] = merged
+
+        logger.info(
+            "MATEngine: order socket message source=%s updates=%d preview=%s",
+            source,
+            len(updates),
+            str(message)[:500],
+        )
+        if updates:
+            rebalance_logger.info(
+                "event=order_socket_update payload=%s",
+                json.dumps({
+                    "stratId": str(self.strategy.strat_id),
+                    "queueId": str(self.entry.id) if getattr(self.entry, "id", None) else None,
+                    "source": source,
+                    "updates": updates,
+                }, ensure_ascii=True),
+            )
+
+    def _extract_order_updates(self, payload: Any) -> dict[str, dict]:
+        updates: dict[str, dict] = {}
+
+        def _walk(node: Any) -> None:
+            if isinstance(node, dict):
+                oid = node.get("id") or node.get("order_id") or node.get("orderId")
+                status = node.get("status")
+                filled_qty = node.get("filledQty", node.get("filled_qty", node.get("filled_quantity", 0)))
+                traded_price = node.get("tradedPrice", node.get("traded_price", node.get("avgPrice", 0)))
+                message = node.get("message") or node.get("reason")
+
+                if oid:
+                    st = self._normalize_order_status(status)
+                    updates[str(oid)] = {
+                        "status": st,
+                        "filled_qty": int(filled_qty or 0),
+                        "traded_price": float(traded_price or 0),
+                        "message": str(message or ""),
+                    }
+
+                for child in node.values():
+                    if isinstance(child, (dict, list, tuple)):
+                        _walk(child)
+            elif isinstance(node, (list, tuple)):
+                for child in node:
+                    _walk(child)
+
+        _walk(payload)
+        return updates
+
+    def _normalize_order_status(self, status: Any) -> str:
+        if status is None:
+            return "unknown"
+        if isinstance(status, int):
+            if status == _STATUS_TRADED:
+                return "filled"
+            if status == _STATUS_REJECTED:
+                return "rejected"
+            if status == _STATUS_CANCELLED:
+                return "cancelled"
+            return "unknown"
+
+        s = str(status).strip().lower()
+        if s in {"2", "traded", "filled", "complete", "completed"}:
+            return "filled"
+        if s in {"5", "rejected", "reject"}:
+            return "rejected"
+        if s in {"1", "cancelled", "canceled", "cancel"}:
+            return "cancelled"
+        if s in {"partial", "partially_filled", "partially filled"}:
+            return "partial"
+        if s in {"open", "trigger pending", "pending", "placed"}:
+            return "placed"
+        return "unknown"
+
     def _wait_for_fills(
         self,
         fyers: fyersModel.FyersModel,
         order_ids: list[str],
     ) -> dict[str, dict]:
         """
-        Polls the orderbook until every order_id reaches a terminal state.
+        Socket-first fill tracking; falls back to polling orderbook when socket
+        is unavailable or stale.
         Returns {order_id: {filled_qty, traded_price, status}}.
         """
         pending = set(order_ids)
         fills:  dict[str, dict] = {}
         deadline = time.time() + ORDER_WAIT_SECS
+        last_poll_ts = 0.0
+        socket_connected = self._ensure_order_socket_connected()
+
+        logger.info(
+            "MATEngine: wait_for_fills start orders=%d socket_connected=%s",
+            len(order_ids),
+            socket_connected,
+        )
+        rebalance_logger.info(
+            "event=order_wait_start payload=%s",
+            json.dumps({
+                "stratId": str(self.strategy.strat_id),
+                "queueId": str(self.entry.id) if getattr(self.entry, "id", None) else None,
+                "orderIds": list(order_ids),
+                "socketConnected": socket_connected,
+            }, ensure_ascii=True),
+        )
 
         while pending and time.time() < deadline:
-            resp = fyers.orderbook()
-            if resp.get("s") == "ok":
-                for order in resp.get("orderBook", []):
-                    oid = order.get("id")
-                    if oid not in pending:
+            resolved_via_socket = 0
+            with self._socket_lock:
+                for oid in list(pending):
+                    upd = self._socket_order_updates.get(oid)
+                    if not upd:
                         continue
-                    status = order.get("status")
-                    if status == _STATUS_TRADED:
+                    st = str(upd.get("status", "unknown")).lower()
+                    if st in {"filled", "rejected", "cancelled"}:
                         fills[oid] = {
-                            "filled_qty":   int(  order.get("filledQty",   0)),
-                            "traded_price": float(order.get("tradedPrice", 0)),
-                            "status": "filled",
+                            "filled_qty": int(upd.get("filled_qty", 0) or 0),
+                            "traded_price": float(upd.get("traded_price", 0) or 0),
+                            "status": st,
                         }
                         pending.discard(oid)
-                    elif status in (_STATUS_REJECTED, _STATUS_CANCELLED):
-                        fills[oid] = {
-                            "filled_qty":   0,
-                            "traded_price": 0,
-                            "status": "rejected" if status == _STATUS_REJECTED else "cancelled",
-                        }
-                        pending.discard(oid)
-                        logger.warning(
-                            "MATEngine: order %s terminal state=%s msg=%s",
-                            oid, status, order.get("message", ""),
-                        )
-            else:
-                logger.warning("MATEngine: orderbook fetch failed: %s", resp)
+                        resolved_via_socket += 1
+
+            if resolved_via_socket:
+                logger.info(
+                    "MATEngine: order socket resolved=%d pending=%d",
+                    resolved_via_socket,
+                    len(pending),
+                )
+
+            if not pending:
+                break
+
+            now_ts = time.time()
+            socket_stale = (
+                socket_connected
+                and (self._order_socket_last_msg_ts is None or (now_ts - self._order_socket_last_msg_ts) > (ORDER_POLL_INTERVAL * 2))
+            )
+            should_poll = (not socket_connected) or socket_stale
+            should_poll = should_poll and (now_ts - last_poll_ts) >= ORDER_POLL_INTERVAL
+
+            if should_poll:
+                fallback_reason = "socket_disconnected" if not socket_connected else "socket_stale"
+                logger.info(
+                    "MATEngine: polling fallback reason=%s pending=%d",
+                    fallback_reason,
+                    len(pending),
+                )
+                rebalance_logger.info(
+                    "event=order_poll_fallback payload=%s",
+                    json.dumps({
+                        "stratId": str(self.strategy.strat_id),
+                        "queueId": str(self.entry.id) if getattr(self.entry, "id", None) else None,
+                        "reason": fallback_reason,
+                        "pendingCount": len(pending),
+                    }, ensure_ascii=True),
+                )
+                last_poll_ts = now_ts
+
+                resp = fyers.orderbook()
+                if resp.get("s") == "ok":
+                    for order in resp.get("orderBook", []):
+                        oid = order.get("id")
+                        if oid not in pending:
+                            continue
+                        status = order.get("status")
+                        if status == _STATUS_TRADED:
+                            fills[oid] = {
+                                "filled_qty":   int(order.get("filledQty", 0)),
+                                "traded_price": float(order.get("tradedPrice", 0)),
+                                "status": "filled",
+                            }
+                            pending.discard(oid)
+                        elif status in (_STATUS_REJECTED, _STATUS_CANCELLED):
+                            fills[oid] = {
+                                "filled_qty": int(order.get("filledQty", 0) or 0),
+                                "traded_price": float(order.get("tradedPrice", 0) or 0),
+                                "status": "rejected" if status == _STATUS_REJECTED else "cancelled",
+                            }
+                            pending.discard(oid)
+                            logger.warning(
+                                "MATEngine: order %s terminal state=%s msg=%s",
+                                oid, status, order.get("message", ""),
+                            )
+                else:
+                    logger.warning("MATEngine: orderbook fetch failed: %s", resp)
 
             if pending:
-                time.sleep(ORDER_POLL_INTERVAL)
+                time.sleep(0.2)
 
         for oid in pending:
-            fills[oid] = {"filled_qty": 0, "traded_price": 0, "status": "timeout"}
-            logger.warning("MATEngine: order %s timed out", oid)
+            upd = self._socket_order_updates.get(oid, {})
+            filled_qty = int(upd.get("filled_qty", 0) or 0)
+            traded_price = float(upd.get("traded_price", 0) or 0)
+            if filled_qty > 0:
+                fills[oid] = {
+                    "filled_qty": filled_qty,
+                    "traded_price": traded_price,
+                    "status": "partial",
+                }
+                logger.warning(
+                    "MATEngine: order %s timed out with partial socket fill qty=%d",
+                    oid,
+                    filled_qty,
+                )
+            else:
+                fills[oid] = {"filled_qty": 0, "traded_price": 0, "status": "timeout"}
+                logger.warning("MATEngine: order %s timed out", oid)
+
+        rebalance_logger.info(
+            "event=order_wait_done payload=%s",
+            json.dumps({
+                "stratId": str(self.strategy.strat_id),
+                "queueId": str(self.entry.id) if getattr(self.entry, "id", None) else None,
+                "fills": fills,
+                "timedOut": [oid for oid, val in fills.items() if str(val.get("status")) == "timeout"],
+            }, ensure_ascii=True),
+        )
 
         return fills
 
@@ -956,7 +1249,7 @@ class MATEngine:
         post_holdings: dict,
         orders: list[dict],
         summary: dict,
-    ) -> None:
+    ) -> RebalancingHistory:
         row = RebalancingHistory(
             strat_id=self.strategy.strat_id,
             queue_id=getattr(self.entry, "id", None),
@@ -975,4 +1268,135 @@ class MATEngine:
             summary_json=json.dumps(summary or {}, ensure_ascii=True),
         )
         self.db.add(row)
+        self.db.flush()
+        return row
+
+    def _has_action_required(self, order_events: list[dict]) -> bool:
+        action_statuses = {
+            "placement_failed",
+            "rejected",
+            "cancelled",
+            "timeout",
+            "missing",
+            "skipped_uc",
+            "skipped_lc",
+            "skipped_price",
+            "skipped_funds",
+        }
+        for ev in order_events:
+            status = str(ev.get("status", "")).lower()
+            if status in action_statuses:
+                return True
+        return False
+
+    def _record_order_legs(self, history_id, order_events: list[dict]) -> None:
+        legs_by_key: dict[tuple[str, str], dict] = {}
+
+        def _get_leg(phase: str, ticker: str) -> dict:
+            key = (phase.lower(), ticker)
+            if key not in legs_by_key:
+                side = "SELL" if phase.lower() == "sell" else "BUY"
+                legs_by_key[key] = {
+                    "phase": phase.lower(),
+                    "side": side,
+                    "symbol": ticker,
+                    "requested_qty": 0,
+                    "filled_qty": 0,
+                    "remaining_qty": 0,
+                    "status": "planned",
+                    "broker_order_id": None,
+                    "attempt_no": 1,
+                    "error_code": None,
+                    "error_message": None,
+                    "is_retryable": True,
+                }
+            return legs_by_key[key]
+
+        for ev in order_events:
+            phase = str(ev.get("phase", "")).lower()
+            ticker = str(ev.get("ticker", "")).upper()
+            if phase not in {"sell", "buy"} or not ticker:
+                continue
+
+            leg = _get_leg(phase, ticker)
+            requested = int(ev.get("requestedQty", leg["requested_qty"]) or 0)
+            if requested > 0:
+                leg["requested_qty"] = max(int(leg["requested_qty"]), requested)
+
+            status = str(ev.get("status", "")).lower()
+            if status == "placed":
+                leg["status"] = "placed"
+                leg["broker_order_id"] = ev.get("orderId")
+                continue
+
+            if status == "placement_failed":
+                leg["status"] = "failed"
+                leg["error_code"] = str(ev.get("errorCode") or "ORDER_PLACE_FAILED")
+                leg["error_message"] = str(ev.get("error") or "Order placement failed")
+                leg["is_retryable"] = bool(ev.get("isRetryable", True))
+                continue
+
+            if status in {"skipped_uc", "skipped_lc", "skipped_price", "skipped_funds"}:
+                leg["status"] = "failed"
+                leg["error_code"] = str(ev.get("errorCode") or "ORDER_SKIPPED")
+                leg["error_message"] = str(ev.get("error") or "Order leg skipped")
+                leg["is_retryable"] = bool(ev.get("isRetryable", status != "skipped_funds"))
+                continue
+
+            if status in {"filled", "partial", "rejected", "cancelled", "timeout", "missing", "unknown"}:
+                filled_qty = int(ev.get("filledQty", 0) or 0)
+                leg["filled_qty"] = max(int(leg["filled_qty"]), filled_qty)
+                req = max(int(leg["requested_qty"]), int(leg["filled_qty"]))
+                leg["requested_qty"] = req
+
+                if status == "filled" and filled_qty >= req:
+                    leg["status"] = "filled"
+                    leg["error_code"] = None
+                    leg["error_message"] = None
+                    leg["is_retryable"] = True
+                elif status == "partial" or filled_qty > 0:
+                    leg["status"] = "partial"
+                    leg["error_code"] = "PARTIAL_FILL"
+                    leg["error_message"] = f"Partially filled {filled_qty}/{req}"
+                    leg["is_retryable"] = True
+                else:
+                    leg["status"] = "failed"
+                    error_map = {
+                        "rejected": "ORDER_REJECTED",
+                        "cancelled": "ORDER_CANCELLED",
+                        "timeout": "BROKER_TIMEOUT",
+                        "missing": "ORDERBOOK_MISSING",
+                    }
+                    leg["error_code"] = error_map.get(status, "ORDER_FAILED")
+                    leg["error_message"] = f"Order ended with status={status}"
+                    leg["is_retryable"] = status in {"timeout", "missing", "unknown"}
+
+        for leg in legs_by_key.values():
+            req = int(leg.get("requested_qty", 0) or 0)
+            filled = int(leg.get("filled_qty", 0) or 0)
+            leg["remaining_qty"] = max(req - filled, 0)
+            if leg["status"] in {"planned", "placed"} and req > 0:
+                leg["status"] = "failed"
+                leg["error_code"] = leg["error_code"] or "NO_TERMINAL_STATUS"
+                leg["error_message"] = leg["error_message"] or "No terminal broker status received"
+                leg["is_retryable"] = True
+
+            row = RebalanceOrderLeg(
+                history_id=history_id,
+                strat_id=self.strategy.strat_id,
+                user_id=self.strategy.user_id,
+                phase=leg["phase"],
+                side=leg["side"],
+                symbol=leg["symbol"],
+                requested_qty=leg["requested_qty"],
+                filled_qty=leg["filled_qty"],
+                remaining_qty=leg["remaining_qty"],
+                status=leg["status"],
+                broker_order_id=leg["broker_order_id"],
+                attempt_no=leg["attempt_no"],
+                error_code=leg["error_code"],
+                error_message=leg["error_message"],
+                is_retryable=leg["is_retryable"],
+            )
+            self.db.add(row)
         self.db.flush()

@@ -597,6 +597,7 @@ def drain_rebalance_queue() -> None:
                     )
                 elif result.success:
                     entry.status       = "done"
+                    entry.reason       = result.reason or entry.reason
                     entry.completed_at = now_ist()
                     logger.info("drain_rebalance_queue: done entry=%s", entry_id)
                 else:

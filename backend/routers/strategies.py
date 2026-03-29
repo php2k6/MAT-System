@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 import json
 import logging
 from pathlib import Path
+from uuid import UUID
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,9 +16,22 @@ from backend.core.security import decrypt_token
 from backend.core.time_utils import now_ist
 from backend.config import settings
 from backend.database import get_db
-from backend.models import BrokerSession, RebalanceQueue, StockPrice, Strategy, User
+from backend.models import (
+    BrokerSession,
+    RebalanceOrderLeg,
+    RebalanceQueue,
+    RebalancingHistory,
+    StockPrice,
+    Strategy,
+    User,
+)
 from backend.mat_engine import CASH_BUFFER, MATEngine, _buy_cost, _sell_cost
-from backend.schemas.strategy import BacktestRequest, DeployStrategyRequest, StrategyActionRequest
+from backend.schemas.strategy import (
+    BacktestRequest,
+    DeployStrategyRequest,
+    RebalanceHistoryActionRequest,
+    StrategyActionRequest,
+)
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 logger = logging.getLogger(__name__)
@@ -29,6 +43,70 @@ UNIVERSE_TO_INT = {
     "nifty150": 150,
     "nifty250": 250,
 }
+
+_HISTORY_ACTIONABLE_STATUSES = {"action_required", "failed"}
+_HISTORY_CLOSED_STATUSES = {"completed", "completed_ignored", "skipped"}
+_LEG_OPEN_STATUSES = {"planned", "placed", "partial", "failed"}
+
+
+def _safe_json_load(payload: str | None):
+    if not payload:
+        return None
+    try:
+        return json.loads(payload)
+    except Exception:
+        return None
+
+
+def _serialize_leg(leg: RebalanceOrderLeg) -> dict:
+    return {
+        "id": str(leg.id),
+        "phase": leg.phase,
+        "side": leg.side,
+        "symbol": leg.symbol,
+        "requestedQty": int(leg.requested_qty or 0),
+        "filledQty": int(leg.filled_qty or 0),
+        "remainingQty": int(leg.remaining_qty or 0),
+        "status": leg.status,
+        "brokerOrderId": leg.broker_order_id,
+        "attemptNo": int(leg.attempt_no or 1),
+        "errorCode": leg.error_code,
+        "errorMessage": leg.error_message,
+        "isRetryable": bool(leg.is_retryable),
+        "createdAt": leg.created_at.isoformat() if leg.created_at else None,
+        "updatedAt": leg.updated_at.isoformat() if leg.updated_at else None,
+    }
+
+
+def _history_row_payload(row: RebalancingHistory, legs: list[RebalanceOrderLeg]) -> dict:
+    unresolved = [leg for leg in legs if int(leg.remaining_qty or 0) > 0 and leg.status in _LEG_OPEN_STATUSES]
+    retryable_unresolved = [leg for leg in unresolved if bool(leg.is_retryable)]
+    return {
+        "id": str(row.id),
+        "strategyId": str(row.strat_id),
+        "queueId": str(row.queue_id) if row.queue_id else None,
+        "status": row.status,
+        "reason": row.reason,
+        "startedAt": row.started_at.isoformat() if row.started_at else None,
+        "completedAt": row.completed_at.isoformat() if row.completed_at else None,
+        "preCash": float(row.pre_cash) if row.pre_cash is not None else None,
+        "postCash": float(row.post_cash) if row.post_cash is not None else None,
+        "preTotal": float(row.pre_total) if row.pre_total is not None else None,
+        "postTotal": float(row.post_total) if row.post_total is not None else None,
+        "preHoldings": _safe_json_load(row.pre_holdings_json),
+        "postHoldings": _safe_json_load(row.post_holdings_json),
+        "orders": _safe_json_load(row.orders_json),
+        "summary": _safe_json_load(row.summary_json),
+        "legs": [_serialize_leg(leg) for leg in legs],
+        "legsMeta": {
+            "total": len(legs),
+            "unresolved": len(unresolved),
+            "retryableUnresolved": len(retryable_unresolved),
+            "nonRetryableUnresolved": len(unresolved) - len(retryable_unresolved),
+            "canRepair": row.status in _HISTORY_ACTIONABLE_STATUSES and len(unresolved) > 0,
+            "canArchive": row.status in _HISTORY_ACTIONABLE_STATUSES and len(unresolved) > 0,
+        },
+    }
 
 
 def _get_available_balance(broker_session: BrokerSession) -> float:
@@ -278,42 +356,327 @@ def rebalance_history(
     user: User = Depends(get_current_user),
 ):
     logger.info("strategy.rebalance_history start user_id=%s", user.user_id)
-    strategy = _deployed_user_strategy(db, user.user_id)
-    if not strategy:
-        logger.info("strategy.rebalance_history no_strategy user_id=%s", user.user_id)
-        return {
-            "success": True,
-            "strategyDeployed": False,
-            "message": "No strategy deployed",
-            "history": [],
-        }
-
     rows = (
-        db.query(RebalanceQueue)
-        .filter(RebalanceQueue.strat_id == strategy.strat_id)
-        .order_by(RebalanceQueue.queued_at.desc())
+        db.query(RebalancingHistory)
+        .filter(RebalancingHistory.user_id == user.user_id)
+        .order_by(RebalancingHistory.started_at.desc())
+        .limit(100)
         .all()
     )
-    logger.info("strategy.rebalance_history rows=%d strat_id=%s", len(rows), strategy.strat_id)
 
-    history = [
-        {
-            "id": str(r.id),
-            "status": r.status,
-            "reason": r.reason,
-            "retryCount": int(r.retry_count or 0),
-            "queuedAt": r.queued_at.isoformat() if r.queued_at else None,
-            "attemptedAt": r.attempted_at.isoformat() if r.attempted_at else None,
-            "completedAt": r.completed_at.isoformat() if r.completed_at else None,
-        }
-        for r in rows
-    ]
+    legs = (
+        db.query(RebalanceOrderLeg)
+        .filter(RebalanceOrderLeg.user_id == user.user_id)
+        .order_by(RebalanceOrderLeg.created_at.desc())
+        .all()
+    )
+    legs_by_history: dict[str, list[RebalanceOrderLeg]] = {}
+    for leg in legs:
+        hid = str(leg.history_id)
+        if hid not in legs_by_history:
+            legs_by_history[hid] = []
+        legs_by_history[hid].append(leg)
+
+    history = [_history_row_payload(row, legs_by_history.get(str(row.id), [])) for row in rows]
+    deployed = _deployed_user_strategy(db, user.user_id)
 
     return {
         "success": True,
-        "strategyDeployed": True,
-        "strategyId": str(strategy.strat_id),
+        "strategyDeployed": bool(deployed),
+        "strategyId": str(deployed.strat_id) if deployed else None,
         "history": history,
+    }
+
+
+@router.get("/rebalance-history/{history_id}")
+def rebalance_history_detail(
+    history_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = (
+        db.query(RebalancingHistory)
+        .filter(
+            RebalancingHistory.id == history_id,
+            RebalancingHistory.user_id == user.user_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "message": "Rebalancing history not found"},
+        )
+
+    legs = (
+        db.query(RebalanceOrderLeg)
+        .filter(RebalanceOrderLeg.history_id == row.id)
+        .order_by(RebalanceOrderLeg.phase.asc(), RebalanceOrderLeg.symbol.asc())
+        .all()
+    )
+    return {
+        "success": True,
+        "history": _history_row_payload(row, legs),
+    }
+
+
+@router.post("/rebalance-history/{history_id}/archive")
+def archive_rebalance_history(
+    history_id: UUID,
+    req: RebalanceHistoryActionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = (
+        db.query(RebalancingHistory)
+        .filter(
+            RebalancingHistory.id == history_id,
+            RebalancingHistory.user_id == user.user_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "message": "Rebalancing history not found"},
+        )
+
+    if row.status in _HISTORY_CLOSED_STATUSES:
+        return {
+            "success": True,
+            "message": "History already closed",
+            "status": row.status,
+        }
+
+    unresolved = (
+        db.query(RebalanceOrderLeg)
+        .filter(
+            RebalanceOrderLeg.history_id == row.id,
+            RebalanceOrderLeg.remaining_qty > 0,
+            RebalanceOrderLeg.status.in_(list(_LEG_OPEN_STATUSES)),
+        )
+        .all()
+    )
+
+    for leg in unresolved:
+        leg.status = "ignored"
+        leg.error_code = "ARCHIVED_BY_USER"
+        leg.error_message = req.note or "User archived unresolved leg"
+        leg.is_retryable = False
+        leg.remaining_qty = 0
+
+    summary = _safe_json_load(row.summary_json) or {}
+    archives = summary.get("archives") or []
+    archives.append({
+        "at": now_ist().isoformat(),
+        "note": req.note,
+        "ignoredLegs": len(unresolved),
+    })
+    summary["archives"] = archives
+
+    row.status = "completed_ignored"
+    row.reason = "ARCHIVED_BY_USER"
+    row.summary_json = json.dumps(summary, ensure_ascii=True)
+    row.completed_at = now_ist()
+    db.commit()
+
+    return {
+        "success": True,
+        "historyId": str(row.id),
+        "status": row.status,
+        "ignoredLegs": len(unresolved),
+    }
+
+
+@router.post("/rebalance-history/{history_id}/repair")
+def repair_rebalance_history(
+    history_id: UUID,
+    req: RebalanceHistoryActionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = (
+        db.query(RebalancingHistory)
+        .filter(
+            RebalancingHistory.id == history_id,
+            RebalancingHistory.user_id == user.user_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "message": "Rebalancing history not found"},
+        )
+
+    if row.status == "completed_ignored":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"success": False, "message": "Archived history cannot be repaired"},
+        )
+
+    strat = (
+        db.query(Strategy)
+        .filter(
+            Strategy.strat_id == row.strat_id,
+            Strategy.user_id == user.user_id,
+        )
+        .first()
+    )
+    if not strat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "message": "Strategy not found for this history"},
+        )
+
+    legs = (
+        db.query(RebalanceOrderLeg)
+        .filter(
+            RebalanceOrderLeg.history_id == row.id,
+            RebalanceOrderLeg.remaining_qty > 0,
+            RebalanceOrderLeg.status.in_(list(_LEG_OPEN_STATUSES)),
+        )
+        .order_by(RebalanceOrderLeg.phase.asc(), RebalanceOrderLeg.created_at.asc())
+        .all()
+    )
+    if not legs:
+        row.status = "completed"
+        row.completed_at = now_ist()
+        db.commit()
+        return {
+            "success": True,
+            "historyId": str(row.id),
+            "status": row.status,
+            "message": "No unresolved legs found",
+        }
+
+    shadow_entry = type("ShadowQueueEntry", (), {"strategy": strat})()
+    engine = MATEngine(shadow_entry, db)
+    try:
+        fyers = engine._get_fyers()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"success": False, "message": f"Broker auth failed: {exc}"},
+        )
+
+    symbols = sorted({leg.symbol for leg in legs})
+    try:
+        quotes = engine._get_quotes(fyers, symbols) if symbols else {}
+    except Exception:
+        quotes = {}
+
+    repaired = 0
+    phase_counts: dict[str, int] = {"sell": 0, "buy": 0}
+
+    for phase in ("sell", "buy"):
+        phase_legs = [leg for leg in legs if leg.phase == phase and int(leg.remaining_qty or 0) > 0]
+        if not phase_legs:
+            continue
+
+        order_to_leg: dict[str, RebalanceOrderLeg] = {}
+        for leg in phase_legs:
+            qty = int(leg.remaining_qty or 0)
+            if qty <= 0:
+                continue
+
+            q = quotes.get(leg.symbol, {})
+            if phase == "sell" and engine._is_lc(q):
+                leg.status = "failed"
+                leg.error_code = "LC_BLOCK"
+                leg.error_message = "Lower-circuit guard blocked sell leg"
+                leg.is_retryable = True
+                continue
+            if phase == "buy" and engine._is_uc(q):
+                leg.status = "failed"
+                leg.error_code = "UC_BLOCK"
+                leg.error_message = "Upper-circuit guard blocked buy leg"
+                leg.is_retryable = True
+                continue
+
+            try:
+                oid = engine._place_order(fyers, leg.symbol, side=-1 if phase == "sell" else 1, qty=qty)
+                leg.broker_order_id = oid
+                leg.status = "placed"
+                leg.attempt_no = int(leg.attempt_no or 1) + 1
+                leg.error_code = None
+                leg.error_message = None
+                order_to_leg[oid] = leg
+                phase_counts[phase] += 1
+            except Exception as exc:
+                leg.status = "failed"
+                leg.error_code = "ORDER_PLACE_FAILED"
+                leg.error_message = str(exc)
+                leg.is_retryable = True
+
+        if not order_to_leg:
+            continue
+
+        fill_map = engine._wait_for_fills(fyers, list(order_to_leg.keys()))
+        for oid, leg in order_to_leg.items():
+            fill = fill_map.get(oid, {"filled_qty": 0, "status": "missing"})
+            filled_now = int(fill.get("filled_qty", 0) or 0)
+            leg.filled_qty = min(int(leg.requested_qty or 0), int(leg.filled_qty or 0) + filled_now)
+            leg.remaining_qty = max(int(leg.requested_qty or 0) - int(leg.filled_qty or 0), 0)
+            fstatus = str(fill.get("status", "unknown")).lower()
+
+            if leg.remaining_qty <= 0:
+                leg.status = "filled"
+                leg.error_code = None
+                leg.error_message = None
+                leg.is_retryable = True
+                repaired += 1
+            elif filled_now > 0:
+                leg.status = "partial"
+                leg.error_code = "PARTIAL_FILL"
+                leg.error_message = f"Partially filled {leg.filled_qty}/{leg.requested_qty}"
+                leg.is_retryable = True
+            else:
+                leg.status = "failed"
+                error_map = {
+                    "rejected": "ORDER_REJECTED",
+                    "cancelled": "ORDER_CANCELLED",
+                    "timeout": "BROKER_TIMEOUT",
+                    "missing": "ORDERBOOK_MISSING",
+                }
+                leg.error_code = error_map.get(fstatus, "ORDER_FAILED")
+                leg.error_message = f"Order ended with status={fstatus}"
+                leg.is_retryable = fstatus in {"timeout", "missing", "unknown"}
+
+    unresolved_after = (
+        db.query(RebalanceOrderLeg)
+        .filter(
+            RebalanceOrderLeg.history_id == row.id,
+            RebalanceOrderLeg.remaining_qty > 0,
+            RebalanceOrderLeg.status.in_(list(_LEG_OPEN_STATUSES)),
+        )
+        .count()
+    )
+
+    summary = _safe_json_load(row.summary_json) or {}
+    repairs = summary.get("repairs") or []
+    repairs.append({
+        "at": now_ist().isoformat(),
+        "note": req.note,
+        "repairedLegs": repaired,
+        "sellPlaced": phase_counts["sell"],
+        "buyPlaced": phase_counts["buy"],
+        "unresolvedAfter": int(unresolved_after),
+    })
+    summary["repairs"] = repairs
+
+    row.status = "completed" if unresolved_after == 0 else "action_required"
+    row.reason = "REPAIRED" if unresolved_after == 0 else "REPAIR_INCOMPLETE"
+    row.summary_json = json.dumps(summary, ensure_ascii=True)
+    row.completed_at = now_ist() if unresolved_after == 0 else row.completed_at
+
+    db.commit()
+    return {
+        "success": True,
+        "historyId": str(row.id),
+        "status": row.status,
+        "repairedLegs": repaired,
+        "unresolvedLegs": int(unresolved_after),
     }
 
 
@@ -381,6 +744,7 @@ def force_rebalance_now(
             entry.retry_count = (entry.retry_count or 0) + 1
         elif result.success:
             entry.status = "done"
+            entry.reason = result.reason or entry.reason
             entry.completed_at = now_ist()
         else:
             entry.status = "failed"
@@ -665,10 +1029,9 @@ def mock_rebalance_preview(
         )
 
     estimated_post_sell_cash = cash + estimated_sell_net
-    buy_budget = estimated_post_sell_cash * (1 - CASH_BUFFER)
+    buy_budget = total_capital * (1 - CASH_BUFFER)
     buy_orders = []
     uc_buy_skipped = []
-    remaining_buy_cash = buy_budget
     for ticker in target_tickers:
         diff = int(target_qty.get(ticker, 0) - current_qty.get(ticker, 0))
         if diff <= 0:
@@ -685,31 +1048,20 @@ def mock_rebalance_preview(
         if est_price <= 0:
             continue
 
-        # Cash-drag aware cap for market-buy simulation.
-        factor = 1 + 0.0 + 0.0000325 + 0.00015 + 0.000001 + 0.001
-        max_affordable = int(remaining_buy_cash / (est_price * factor))
-        capped_qty = min(diff, max_affordable)
-        if capped_qty <= 0:
-            continue
-
-        est_gross = capped_qty * est_price
+        est_gross = diff * est_price
         est_charges = _buy_cost(est_gross)
         est_outflow = est_gross + est_charges
-        if est_outflow > remaining_buy_cash:
-            continue
-
-        remaining_buy_cash -= est_outflow
 
         buy_orders.append(
             {
                 "symbol": ticker,
                 "side": "BUY",
-                "qty": capped_qty,
+                "qty": diff,
                 "ltp": round(est_price, 4),
                 "estimatedValue": round(est_gross, 2),
                 "estimatedCharges": round(est_charges, 2),
                 "estimatedOutflow": round(est_outflow, 2),
-                "cappedByCash": capped_qty < diff,
+                "validity": "IOC",
                 "reason": "NEW" if int(db_holdings.get(ticker, {}).get("qty") or 0) == 0 else "TOP_UP",
             }
         )
@@ -750,7 +1102,7 @@ def mock_rebalance_preview(
             "workingCapital": round(working_capital, 2),
             "estimatedPostSellCash": round(estimated_post_sell_cash, 2),
             "estimatedBuyBudget": round(buy_budget, 2),
-            "estimatedBuyBudgetRemaining": round(remaining_buy_cash, 2),
+            "singleShotPlan": True,
         },
         "checks": {
             "ucCandidatesSkipped": uc_candidates,
@@ -816,4 +1168,31 @@ def trigger_yahoo_daily_sync(
         "success": True,
         "message": "Triggered Yahoo daily DB sync",
         "result": result,
+    }
+
+
+@router.get("/testing/rebalance-execution-config")
+def rebalance_execution_config(
+    user: User = Depends(get_current_user),
+):
+    _ensure_testing_enabled()
+    _ = user
+
+    order_socket_available = False
+    try:
+        from fyers_apiv3.FyersWebsocket.order_ws import FyersOrderSocket  # noqa: F401
+        order_socket_available = True
+    except Exception:
+        order_socket_available = False
+
+    return {
+        "success": True,
+        "execution": {
+            "singleShotTargetSizing": True,
+            "recalculateBuyQtyAfterSells": False,
+            "orderValidity": "IOC",
+            "cashBuffer": float(CASH_BUFFER),
+            "fillTrackingMode": "socket_first_poll_fallback",
+            "orderSocketAvailable": order_socket_available,
+        },
     }
