@@ -177,11 +177,13 @@ export default function Dashboard() {
     portfolio?.strategy?.status === "active"
   );
  
+  const handleSummaryUpdate = useCallback(() => {}, []);
+
   const wsStatus = useLiveWebSocket({
     enabled:           wsEnabled,
     onHoldingsUpdate:  handleHoldingsUpdate,
     onPositionsUpdate: handlePositionsUpdate,
-    onSummaryUpdate:   () => {},   // unused — frontend calculates everything
+    onSummaryUpdate:   handleSummaryUpdate,
     onUnauthorized:    handleUnauthorized,
   });
  
@@ -450,4 +452,3 @@ export default function Dashboard() {
     </>
   );
 }
- 
