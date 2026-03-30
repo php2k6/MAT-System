@@ -6,10 +6,9 @@ import { PriceSourceBadge } from "./StatCard.jsx";
 function EmptyRow({ message }) {
   return (
     <tr>
-      <td colSpan={7} style={{
+      <td colSpan={6} style={{
         padding: "36px 20px", textAlign: "center",
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif",
-        color: "#aaa", fontSize: 13,
+        fontFamily: SYS, color: "#aaa", fontSize: 13,
       }}>
         {message}
       </td>
@@ -17,7 +16,8 @@ function EmptyRow({ message }) {
   );
 }
 
-// ─── SHARED POSITIONS TABLE ───────────────────────────────────────────────────
+// ─── SHARED TABLE ─────────────────────────────────────────────────────────────
+// Day Chg column removed — all calculations are frontend-only from ltp+qty+avgPrice.
 function PositionsTable({ items, emptyMessage }) {
   return (
     <div style={{ overflowX: "auto" }}>
@@ -30,7 +30,6 @@ function PositionsTable({ items, emptyMessage }) {
             <th>LTP</th>
             <th>Value</th>
             <th>P&L</th>
-            <th>Day Chg</th>
           </tr>
         </thead>
         <tbody>
@@ -38,10 +37,6 @@ function PositionsTable({ items, emptyMessage }) {
             ? <EmptyRow message={emptyMessage} />
             : (items ?? []).map(h => {
               const pos = h.pnl >= 0;
-              const dc = Number(h.dayChange);
-              const dayChange = Number.isFinite(dc) ? dc : 0;
-              const dayPos = dayChange >= 0;
-
               return (
                 <tr key={h.symbol}>
                   <td>
@@ -50,9 +45,11 @@ function PositionsTable({ items, emptyMessage }) {
                   </td>
                   <td>{h.qty}</td>
                   <td>{fmt(h.avgPrice)}</td>
-                  <td style={{ color: "#111", fontWeight: 600 }}
-                      key={`ltp-${h.symbol}-${h.priceTs}`}
-                      className={h.priceSource === "live" ? "ltp-flash" : ""}>
+                  <td
+                    style={{ color: "#111", fontWeight: 600 }}
+                    key={`ltp-${h.symbol}-${h.priceTs}`}
+                    className={h.priceSource === "live" ? "ltp-flash" : ""}
+                  >
                     {fmt(h.ltp)}
                   </td>
                   <td>{fmtCompact(h.value)}</td>
@@ -63,9 +60,6 @@ function PositionsTable({ items, emptyMessage }) {
                     <div className={`db-pnl-pct ${pos ? "pos-text" : "neg-text"}`}>
                       {pos ? "▲" : "▼"} {Math.abs(h.pnlPct).toFixed(2)}%
                     </div>
-                  </td>
-                  <td className={dayPos ? "pos-text" : "neg-text"} style={{ fontWeight: 600 }}>
-                    {dayPos ? "+" : ""}{dayChange.toFixed(2)}%
                   </td>
                 </tr>
               );
@@ -101,8 +95,9 @@ export function HoldingsPanel({ holdings }) {
 }
 
 // ─── POSITIONS PANEL ──────────────────────────────────────────────────────────
+// Shows intraday positions (today's buys/sells) from the broker.
+// Total P&L is summed from frontend-calculated pnl of each row.
 export function PositionsPanel({ positions }) {
-  // Aggregate P&L from all position rows — stays in sync with live LTP updates
   const totalPnl = (positions ?? []).reduce((sum, p) => sum + (Number(p.pnl) || 0), 0);
   const isPos    = totalPnl >= 0;
   const hasItems = (positions ?? []).length > 0;
@@ -121,7 +116,7 @@ export function PositionsPanel({ positions }) {
         </div>
       </div>
 
-      {/* ── Positions P&L summary bar — only shown when there are rows ── */}
+      {/* P&L summary bar — only shown when there are rows */}
       {hasItems && (
         <div style={{
           display: "flex", alignItems: "center", gap: 16,
