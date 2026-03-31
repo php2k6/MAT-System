@@ -16,6 +16,7 @@ from backend.core.security import decrypt_token
 from backend.core.market_feed import get_market_feed_manager
 from backend.models import BrokerSession, StockTicker
 from backend.scheduler import start_scheduler, stop_scheduler
+from starlette.responses import PlainTextResponse
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -29,6 +30,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Define your allowed domain (move this to your settings)
+ALLOWED_HOSTS = [
+    "mat.phpx.live",  # Production Domain
+    "localhost",      # Local development
+    "127.0.0.1"       # Local development
+]
+
+@app.middleware("http")
+async def host_header_middleware(request: Request, call_next):
+    host = request.headers.get("host", "").split(":")[0]  # Split to ignore port numbers
+    
+    if host not in ALLOWED_HOSTS:
+        # Return a 403 Forbidden or 444-style empty response
+        # Using 403 tells the bot "You aren't allowed here"
+        return PlainTextResponse("Forbidden", status_code=403)
+    
+    return await call_next(request)
 
 
 @app.middleware("http")
