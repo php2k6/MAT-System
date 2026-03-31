@@ -55,8 +55,6 @@ from backend.core.security import decrypt_token
 from backend.core.time_utils import now_ist
 from backend.models import (
     BrokerSession,
-    Holdings,
-    Portfolio,
     RebalanceOrderLeg,
     RebalanceQueue,
     RebalancingHistory,
@@ -64,8 +62,10 @@ from backend.models import (
     Strategy,
 )
 
-logger = logging.getLogger(__name__)
-rebalance_logger = logging.getLogger("backend.rebalance")
+# All MATEngine logging (debug, info, warning, error, exception) goes to
+# rebalancing.log via the "backend.rebalance" logger (configured in logging_setup.py).
+logger = logging.getLogger("backend.rebalance")
+rebalance_logger = logger  # kept for call-site compatibility
 
 # ── Transaction-cost constants (matching backtest / Fyers CNC) ───────────────
 # Fyers charges zero brokerage on equity delivery (CNC).
@@ -352,30 +352,46 @@ class MATEngine:
         target_set = set(target_tickers)
 
         # ── 9. Build fixed target qty plan once (single transaction model) ───
+        # Use LTP from step-7 quotes for sizing (more accurate at 12pm execution);
+        # fall back to prev_close for any ticker missing a live quote.
+        pricing: dict[str, float] = {}
+        for t in target_tickers:
+            ltp = float((all_quotes.get(t) or {}).get("ltp", 0) or 0)
+            pricing[t] = ltp if ltp > 0 else float(prev_close.get(t, 0) or 0)
+
+        ltp_used  = [t for t in target_tickers if float((all_quotes.get(t) or {}).get("ltp", 0) or 0) > 0]
+        pc_used   = [t for t in target_tickers if t not in ltp_used]
+        logger.info(
+            "MATEngine: pricing source ltp=%d prev_close_fallback=%d",
+            len(ltp_used), len(pc_used),
+        )
+        if pc_used:
+            logger.warning("MATEngine: prev_close fallback tickers=%s", pc_used)
+
         alloc_plan = working_capital / len(target_tickers)
         target_qty_plan: dict[str, int] = {}
         for t in target_tickers:
-            close = float(prev_close.get(t, 0) or 0)
-            target_qty_plan[t] = int(alloc_plan / close) if close > 0 else 0
+            price = pricing.get(t, 0)
+            target_qty_plan[t] = int(alloc_plan / price) if price > 0 else 0
 
         base_cost = sum(
-            target_qty_plan[t] * float(prev_close.get(t, 0) or 0)
+            target_qty_plan[t] * pricing.get(t, 0)
             for t in target_tickers
-            if float(prev_close.get(t, 0) or 0) > 0
+            if pricing.get(t, 0) > 0
         )
         residual = working_capital - base_cost
 
         remainders = [
-            (t, alloc_plan - target_qty_plan[t] * float(prev_close.get(t, 0) or 0))
+            (t, alloc_plan - target_qty_plan[t] * pricing.get(t, 0))
             for t in target_tickers
-            if float(prev_close.get(t, 0) or 0) > 0
+            if pricing.get(t, 0) > 0
         ]
         remainders.sort(key=lambda x: x[1], reverse=True)
         for t, _ in remainders:
-            close = float(prev_close.get(t, 0) or 0)
-            if close > 0 and residual >= close:
+            price = pricing.get(t, 0)
+            if price > 0 and residual >= price:
                 target_qty_plan[t] += 1
-                residual -= close
+                residual -= price
 
         logger.info(
             "MATEngine: fixed plan built tickers=%d planned_notional=%.2f residual=%.2f",
@@ -552,73 +568,17 @@ class MATEngine:
                     ticker, fill["filled_qty"], fill["traded_price"], fill.get("status", "?"),
                 )
 
-        # ── 13. Rebuild holdings state (analytical) ───────────────────────────
-        # Apply sell fills to db_holdings
-        new_holdings: dict[str, dict] = {
-            t: {"qty": v["qty"], "avg_price": v["avg_price"]}
-            for t, v in db_holdings.items()
-        }
-
-        for ticker, fill in sell_fills.items():
-            if fill["filled_qty"] > 0:
-                remaining = new_holdings.get(ticker, {}).get("qty", 0) - fill["filled_qty"]
-                if remaining <= 0:
-                    new_holdings.pop(ticker, None)
-                else:
-                    new_holdings[ticker]["qty"] = remaining
-
-        for ticker, fill in buy_fills.items():
-            if fill["filled_qty"] > 0:
-                buy_price = fill["traded_price"]
-                if ticker in new_holdings:
-                    old_qty   = new_holdings[ticker]["qty"]
-                    old_avg   = new_holdings[ticker]["avg_price"] or buy_price
-                    new_qty   = old_qty + fill["filled_qty"]
-                    new_avg   = (old_qty * old_avg + fill["filled_qty"] * buy_price) / new_qty
-                    new_holdings[ticker] = {"qty": new_qty, "avg_price": new_avg, "last_price": buy_price}
-                else:
-                    new_holdings[ticker] = {
-                        "qty": fill["filled_qty"],
-                        "avg_price": buy_price,
-                        "last_price": buy_price,
-                    }
-
-        # Refresh broker cash after buy placements/fills so strategy cash is
-        # not over-reported (prevents equity+cash double counting).
+        # ── Refresh broker cash after fills ───────────────────────────────────
+        # Holdings/positions/cash DB state is handled by broker_reconcile_snapshot()
+        # called in the scheduler immediately after this run completes.
         try:
             final_cash = self._get_cash(fyers)
         except RuntimeError as e:
             return _done(RebalanceResult(success=False, reason=f"POST_BUY_FUNDS_FAILED:{e}"))
 
-        # Compute final portfolio value (use LTP from quotes or prev_close)
-        def _ltp(ticker: str) -> float:
-            q = all_quotes.get(ticker)
-            return q["ltp"] if q else prev_close.get(ticker, 0)
-
-        final_equity = sum(v["qty"] * _ltp(t) for t, v in new_holdings.items())
-        final_total  = final_cash + final_equity
-        post_holdings_snapshot = {
-            t: {
-                "qty": int(v["qty"]),
-                "avg_price": float(v.get("avg_price") or 0),
-                "last_price": float(_ltp(t) or 0),
-            }
-            for t, v in new_holdings.items()
-            if int(v.get("qty", 0) or 0) > 0
-        }
-
-        # ── Flush DB changes (committed by scheduler) ─────────────────────────
-        try:
-            self._flush_holdings(new_holdings, all_quotes)
-            self._flush_strategy(final_total, final_cash)
-            self._flush_portfolio(final_total)
-        except Exception:
-            self.db.rollback()
-            return _done(RebalanceResult(success=False, reason="DB_FLUSH_FAILED"))
-
         logger.info(
-            "MATEngine: DONE strat=%s final_value=%.2f cash=%.2f n_holdings=%d",
-            sid, final_total, final_cash, len(new_holdings),
+            "MATEngine: DONE strat=%s post_cash=%.2f",
+            sid, final_cash,
         )
         has_action_required = self._has_action_required(order_events)
         return _done(
@@ -630,8 +590,8 @@ class MATEngine:
                 },
             ),
             post_cash=float(final_cash),
-            post_total=float(final_total),
-            post_holdings=post_holdings_snapshot,
+            post_total=None,
+            post_holdings={},
             summary={
                 "targetTickers": target_tickers,
                 "sellExits": sells_exit,

@@ -2,36 +2,36 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fyers_apiv3 import fyersModel
 
 from backend.config import settings
 from backend.core.deps import get_current_user
-from backend.core.fyers_funds import extract_available_cash
 from backend.core.live_prices import get_live_price_store
 from backend.core.market_feed import get_market_feed_manager
-from backend.core.security import decode_access_token, decrypt_token
+from backend.core.security import decode_access_token
 from backend.core.time_utils import now_ist
 from backend.database import SessionLocal
-from backend.models import BrokerSession, Holdings, Positions, Strategy, User
+from backend.models import Holdings, Positions, Strategy, User
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(settings.scheduler_timezone)
 
+# Both values are configurable via WS_PRICE_POLL_INTERVAL and
+# WS_PORTFOLIO_REFRESH_INTERVAL environment variables (see config.py).
+_PRICE_POLL_INTERVAL: float      = settings.ws_price_poll_interval
+_HOLDINGS_REFRESH_INTERVAL: float = settings.ws_portfolio_refresh_interval
+
 
 def _is_market_hours() -> bool:
-    now_ist = datetime.now(_IST)
-    if now_ist.weekday() >= 5:
+    now = datetime.now(_IST)
+    if now.weekday() >= 5:
         return False
-
-    minutes = now_ist.hour * 60 + now_ist.minute
-    market_open = int(settings.market_open_hour_ist) * 60 + int(settings.market_open_minute_ist)
+    minutes      = now.hour * 60 + now.minute
+    market_open  = int(settings.market_open_hour_ist)  * 60 + int(settings.market_open_minute_ist)
     market_close = int(settings.market_close_hour_ist) * 60 + int(settings.market_close_minute_ist)
     return market_open <= minutes <= market_close
 
@@ -46,9 +46,9 @@ def testing_feed_status(current_user: User = Depends(get_current_user)):
     _ensure_testing_enabled()
 
     manager = get_market_feed_manager()
-    feed = manager.get_debug_snapshot()
+    feed    = manager.get_debug_snapshot()
     sample_symbols = feed.get("subscribedSample") or []
-    sample_prices = get_live_price_store().get_prices(sample_symbols)
+    sample_prices  = get_live_price_store().get_prices(sample_symbols)
 
     logger.info(
         "live.testing.feed_status user_id=%s connected=%s subscribed=%s",
@@ -57,22 +57,16 @@ def testing_feed_status(current_user: User = Depends(get_current_user)):
         feed.get("subscribedCount"),
     )
 
-    return {
-        "success": True,
-        "feed": feed,
-        "samplePrices": sample_prices,
-    }
+    return {"success": True, "feed": feed, "samplePrices": sample_prices}
 
 
 async def _resolve_user(websocket: WebSocket) -> User | None:
     token = websocket.cookies.get("access_token")
     if not token:
         return None
-
     user_id = decode_access_token(token)
     if not user_id:
         return None
-
     db = SessionLocal()
     try:
         return db.query(User).filter(User.user_id == user_id).first()
@@ -81,7 +75,7 @@ async def _resolve_user(websocket: WebSocket) -> User | None:
 
 
 def _pick_strategy_for_user(db, user_id):
-    deployed = (
+    return (
         db.query(Strategy)
         .filter(
             Strategy.user_id == user_id,
@@ -90,113 +84,31 @@ def _pick_strategy_for_user(db, user_id):
         .order_by(Strategy.start_date.desc(), Strategy.next_rebalance_date.desc())
         .first()
     )
-    return deployed
 
 
-def _extract_positions_snapshot(positions_resp: dict) -> tuple[float, float, float] | None:
-    if positions_resp.get("s") != "ok":
-        return None
-    rows = positions_resp.get("netPositions") or positions_resp.get("overall") or []
+def _load_portfolio_from_db(db, strat_id: str) -> dict:
+    """
+    Load holdings + positions for a strategy into a lightweight cache dict.
+    Returns:
+      {
+        "holdings":  {ticker: {"qty": int, "avg_price": float, "last_price": float}},
+        "positions": {ticker: {"qty": int, "avg_price": float, "last_price": float}},
+        "tickers":   sorted list of all tickers,
+      }
+    """
+    holdings_rows  = db.query(Holdings).filter(Holdings.strat_id == strat_id).all()
+    positions_rows = db.query(Positions).filter(Positions.strat_id == strat_id).all()
 
-    invested = 0.0
-    current_value = 0.0
-    pnl = 0.0
-    for row in rows:
-        qty = abs(int(row.get("netQty", row.get("qty", 0)) or 0))
-        if qty <= 0:
-            continue
-        avg = float(row.get("netAvg", row.get("avgPrice", row.get("buyAvg", 0))) or 0)
-        ltp = float(row.get("ltp", 0) or 0)
-        market_val = float(row.get("marketVal", 0) or 0)
-        pl = float(row.get("pl", row.get("pnl", 0)) or 0)
-
-        pos_invested = qty * avg if avg > 0 else 0.0
-        pos_current = market_val if market_val > 0 else (qty * ltp if ltp > 0 else pos_invested)
-        invested += pos_invested
-        current_value += pos_current
-        pnl += pl if pl != 0 else (pos_current - pos_invested)
-
-    return invested, current_value, pnl
-
-
-def _extract_holdings_snapshot(holdings_resp: dict) -> tuple[float, float, float] | None:
-    if holdings_resp.get("s") != "ok":
-        return None
-
-    rows = holdings_resp.get("holdings") or holdings_resp.get("overall") or []
-    if isinstance(rows, dict):
-        rows = rows.get("holdings") or rows.get("overall") or []
-    if not isinstance(rows, list):
-        return None
-
-    invested = 0.0
-    current_value = 0.0
-    pnl = 0.0
-
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        qty = int(row.get("quantity", row.get("qty", 0)) or 0)
-        if qty <= 0:
-            continue
-
-        avg = float(row.get("costPrice", row.get("avgPrice", row.get("holdingPrice", 0))) or 0)
-        ltp = float(row.get("ltp", row.get("lastTradedPrice", 0)) or 0)
-        market_val = float(row.get("marketVal", 0) or 0)
-
-        pos_invested = qty * avg if avg > 0 else 0.0
-        pos_current = market_val if market_val > 0 else (qty * ltp if ltp > 0 else pos_invested)
-        invested += pos_invested
-        current_value += pos_current
-        pnl += pos_current - pos_invested
-
-    return invested, current_value, pnl
-
-
-def _fetch_fyers_summary_for_user(db, user_id):
-    try:
-        session = (
-            db.query(BrokerSession)
-            .filter(
-                BrokerSession.user_id == user_id,
-                BrokerSession.token_date == date.today(),
-            )
-            .order_by(BrokerSession.created_at.desc())
-            .first()
-        )
-        if not session:
-            return None
-
-        token = decrypt_token(session.access_token_encrypted)
-        Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
-        fyers = fyersModel.FyersModel(
-            client_id=settings.fyers_app_id,
-            token=token,
-            is_async=False,
-            log_path=settings.log_dir,
-        )
-
-        funds = extract_available_cash(fyers.funds())
-        holdings = _extract_holdings_snapshot(fyers.holdings())
-        positions = _extract_positions_snapshot(fyers.positions())
-        snapshot = holdings if holdings is not None else positions
-        if funds is None or snapshot is None:
-            return None
-        invested, positions_value, pnl = snapshot
-        current_value = funds + positions_value
-        pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
-
-        return {
-            "invested": invested,
-            "cash": funds,
-            "equity": positions_value,
-            "currentValue": current_value,
-            "pnl": pnl,
-            "pnlPct": pnl_pct,
-        }
-    except Exception:
-        logger.debug("live.ws fyers_summary_unavailable user_id=%s", user_id, exc_info=True)
-        return None
+    holdings = {
+        r.ticker: {"qty": int(r.qty or 0), "avg_price": float(r.avg_price or 0), "last_price": float(r.last_price or 0)}
+        for r in holdings_rows if r.qty and r.qty > 0
+    }
+    positions = {
+        r.ticker: {"qty": int(r.qty or 0), "avg_price": float(r.avg_price or 0), "last_price": float(r.last_price or 0)}
+        for r in positions_rows if r.qty and r.qty > 0
+    }
+    tickers = sorted(set(holdings) | set(positions))
+    return {"holdings": holdings, "positions": positions, "tickers": tickers}
 
 
 @router.websocket("/ws")
@@ -214,148 +126,94 @@ async def live_ws(websocket: WebSocket):
     logger.info("live.ws authenticated user_id=%s", user.user_id)
 
     store = get_live_price_store()
-    last_sent: dict[str, float] = {}
+
+    # LTP change tracking (only send when price moves)
+    last_sent: dict[str, float]           = {}
     last_positions_sent: dict[str, float] = {}
-    last_summary_value: float | None = None
+
+    # Holdings cache — loaded once, refreshed every _HOLDINGS_REFRESH_INTERVAL seconds
+    portfolio: dict | None = None
+    strat_id:  str | None  = None
+    last_holdings_refresh: float = 0.0
 
     try:
         while True:
-            db = SessionLocal()
-            try:
-                strategy = _pick_strategy_for_user(db, user.user_id)
-                if not strategy:
-                    logger.debug("live.ws no_strategy user_id=%s", user.user_id)
-                    await websocket.send_json({"type": "status", "message": "NO_STRATEGY"})
-                    await asyncio.sleep(3)
-                    continue
+            now_mono = asyncio.get_event_loop().time()
 
-                holdings = (
-                    db.query(Holdings)
-                    .filter(Holdings.strat_id == strategy.strat_id)
-                    .all()
-                )
-                positions = (
-                    db.query(Positions)
-                    .filter(Positions.strat_id == strategy.strat_id)
-                    .all()
-                )
-                holding_tickers = [h.ticker for h in holdings if h.qty and h.qty > 0]
-                position_tickers = [p.ticker for p in positions if p.qty and p.qty > 0]
-                tickers = sorted(set(holding_tickers) | set(position_tickers))
-                use_live_prices = _is_market_hours()
-                live_map = store.get_prices(tickers) if use_live_prices else {}
+            # ── Refresh holdings from DB (on connect + every 60s) ─────────────
+            needs_refresh = (now_mono - last_holdings_refresh) >= _HOLDINGS_REFRESH_INTERVAL
 
-                items = []
-                equity = 0.0
-                db_invested_total = 0.0
-                for row in holdings:
-                    qty = int(row.qty or 0)
-                    if qty <= 0:
+            if portfolio is None or needs_refresh:
+                db = SessionLocal()
+                try:
+                    strategy = _pick_strategy_for_user(db, user.user_id)
+                    if not strategy:
+                        logger.debug("live.ws no_strategy user_id=%s", user.user_id)
+                        await websocket.send_json({"type": "status", "message": "NO_STRATEGY"})
+                        portfolio = None
+                        strat_id  = None
+                        await asyncio.sleep(3)
                         continue
-                    avg_price = float(row.avg_price or 0)
-                    db_invested_total += qty * avg_price
-                    live = live_map.get(row.ticker)
-                    if use_live_prices and live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
-                        ltp = float(live["ltp"])
-                        ts = int(live.get("ts") or 0)
-                    else:
-                        ltp = float(row.last_price or 0)
-                        ts = 0
 
-                    equity += qty * ltp
-                    if last_sent.get(row.ticker) != ltp:
-                        last_sent[row.ticker] = ltp
-                        items.append({"symbol": row.ticker, "ltp": round(ltp, 2), "ts": ts})
+                    strat_id  = str(strategy.strat_id)
+                    portfolio = _load_portfolio_from_db(db, strat_id)
+                    last_holdings_refresh = now_mono
 
-                if items:
-                    logger.debug("live.ws holdings_update user_id=%s count=%d", user.user_id, len(items))
-                    await websocket.send_json(
-                        {
-                            "type": "holdings_update",
-                            "timestamp": now_ist().isoformat(),
-                            "items": items,
-                        }
+                    logger.debug(
+                        "live.ws holdings_refreshed user_id=%s holdings=%d positions=%d",
+                        user.user_id,
+                        len(portfolio["holdings"]),
+                        len(portfolio["positions"]),
                     )
+                finally:
+                    db.close()
 
-                position_items = []
-                positions_total_pnl = 0.0
-                for p in positions:
-                    qty = int(p.qty or 0)
-                    if qty <= 0:
-                        continue
-                    avg = float(p.avg_price or 0)
-                    live = live_map.get(p.ticker)
-                    if use_live_prices and live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
-                        ltp = float(live["ltp"])
-                        ts = int(live.get("ts") or 0)
-                    else:
-                        ltp = float(p.last_price or 0)
-                        ts = 0
+            # ── LTP from Redis (market hours) or last_price (off hours) ───────
+            use_live = _is_market_hours()
+            live_map = store.get_prices(portfolio["tickers"]) if (use_live and portfolio["tickers"]) else {}
 
-                    market_value = qty * ltp
-                    invested = qty * avg
-                    pnl = market_value - invested
-                    pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
-                    positions_total_pnl += pnl
+            def _resolve_ltp(ticker: str, last_price: float) -> tuple[float, int]:
+                live = live_map.get(ticker)
+                if use_live and live and not live.get("is_stale") and float(live.get("ltp", 0)) > 0:
+                    return float(live["ltp"]), int(live.get("ts") or 0)
+                return last_price, 0
 
-                    prev_ltp = last_positions_sent.get(p.ticker)
-                    if prev_ltp != ltp:
-                        last_positions_sent[p.ticker] = ltp
-                        position_items.append({"symbol": p.ticker, "ltp": round(ltp, 2), "ts": ts})
+            # ── Holdings LTP updates ───────────────────────────────────────────
+            items = []
+            for ticker, data in (portfolio["holdings"]).items():
+                ltp, ts = _resolve_ltp(ticker, data["last_price"])
+                if last_sent.get(ticker) != ltp:
+                    last_sent[ticker] = ltp
+                    items.append({"symbol": ticker, "ltp": round(ltp, 2), "ts": ts})
 
-                if position_items:
-                    logger.debug("live.ws positions_update user_id=%s count=%d", user.user_id, len(position_items))
-                    await websocket.send_json(
-                        {
-                            "type": "positions_update",
-                            "timestamp": now_ist().isoformat(),
-                            "items": position_items,
-                        }
-                    )
+            if items:
+                logger.debug("live.ws holdings_update user_id=%s count=%d", user.user_id, len(items))
+                await websocket.send_json({
+                    "type":      "holdings_update",
+                    "timestamp": now_ist().isoformat(),
+                    "items":     items,
+                })
 
-                fyers_summary = _fetch_fyers_summary_for_user(db, user.user_id) if use_live_prices else None
-                if fyers_summary:
-                    invested = float(fyers_summary["invested"])
-                    cash = float(fyers_summary["cash"])
-                    equity_summary = float(fyers_summary["equity"])
-                    total_value = float(fyers_summary["currentValue"])
-                    pnl = float(fyers_summary["pnl"])
-                    pnl_pct = float(fyers_summary["pnlPct"])
-                else:
-                    # Fallback when broker snapshot is unavailable.
-                    cash = float(strategy.unused_capital or 0)
-                    total_value = equity + cash
-                    invested = db_invested_total
-                    pnl = total_value - invested
-                    pnl_pct = (pnl / invested * 100.0) if invested > 0 else 0.0
-                    equity_summary = equity
+            # ── Positions LTP updates ──────────────────────────────────────────
+            position_items = []
+            for ticker, data in (portfolio["positions"]).items():
+                ltp, ts = _resolve_ltp(ticker, data["last_price"])
+                if last_positions_sent.get(ticker) != ltp:
+                    last_positions_sent[ticker] = ltp
+                    position_items.append({"symbol": ticker, "ltp": round(ltp, 2), "ts": ts})
 
-                if last_summary_value is None or abs(total_value - last_summary_value) >= 0.01:
-                    last_summary_value = total_value
-                    logger.debug("live.ws summary_update user_id=%s value=%.2f", user.user_id, total_value)
-                    await websocket.send_json(
-                        {
-                            "type": "summary_update",
-                            "timestamp": now_ist().isoformat(),
-                            "summary": {
-                                "invested": round(invested, 2),
-                                "currentValue": round(total_value, 2),
-                                "cash": round(cash, 2),
-                                "equity": round(equity_summary, 2),
-                                "pnl": round(pnl, 2),
-                                "totalPnl": round(positions_total_pnl if positions else pnl, 2),
-                                "pnlPct": round(pnl_pct, 2),
-                            },
-                        }
-                    )
-            finally:
-                db.close()
+            if position_items:
+                logger.debug("live.ws positions_update user_id=%s count=%d", user.user_id, len(position_items))
+                await websocket.send_json({
+                    "type":      "positions_update",
+                    "timestamp": now_ist().isoformat(),
+                    "items":     position_items,
+                })
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(_PRICE_POLL_INTERVAL)
 
     except WebSocketDisconnect:
         logger.info("live.ws disconnected user_id=%s", user.user_id)
-        return
     except Exception:
         logger.exception("live.ws error user_id=%s", user.user_id)
         await websocket.close(code=1011)

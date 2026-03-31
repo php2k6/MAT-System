@@ -754,6 +754,15 @@ def force_rebalance_now(
 
         db.commit()
         db.refresh(entry)
+
+        # Sync broker ground truth (mat_engine no longer does analytical flush).
+        if result.success:
+            try:
+                from backend.scheduler import broker_reconcile_snapshot
+                broker_reconcile_snapshot()
+            except Exception:
+                logger.exception("strategy.testing.force_rebalance: broker_reconcile failed (non-fatal)")
+
         logger.info("strategy.testing.force_rebalance done queue_id=%s status=%s", entry.id, entry.status)
     except Exception as exc:
         db.rollback()
@@ -947,31 +956,36 @@ def mock_rebalance_preview(
             "simulatedOrders": {"sell": [], "buy": []},
         }
 
-    # Build target quantities from working capital so target portfolio notionals
-    # are aligned with reported workingCapital.
+    # Build target quantities using LTP-first pricing to match the live engine.
+    # Falls back to prev_close for any ticker with no live quote.
     alloc_target = working_capital / len(target_tickers)
+    pricing = {}
+    for t in target_tickers:
+        ltp = float((quotes.get(t) or {}).get("ltp", 0) or 0)
+        pricing[t] = ltp if ltp > 0 else float(prev_close.get(t, 0) or 0)
+
     target_qty = {}
     for ticker in target_tickers:
-        close = float(prev_close.get(ticker, 0) or 0)
-        target_qty[ticker] = int(alloc_target / close) if close > 0 else 0
+        price = pricing.get(ticker, 0)
+        target_qty[ticker] = int(alloc_target / price) if price > 0 else 0
 
     target_base_cost = sum(
-        target_qty[t] * float(prev_close[t])
+        target_qty[t] * pricing.get(t, 0)
         for t in target_tickers
-        if float(prev_close.get(t, 0) or 0) > 0
+        if pricing.get(t, 0) > 0
     )
     target_residual = working_capital - target_base_cost
     target_remainders = [
-        (t, alloc_target - target_qty[t] * float(prev_close[t]))
+        (t, alloc_target - target_qty[t] * pricing.get(t, 0))
         for t in target_tickers
-        if float(prev_close.get(t, 0) or 0) > 0
+        if pricing.get(t, 0) > 0
     ]
     target_remainders.sort(key=lambda x: x[1], reverse=True)
     for ticker, _ in target_remainders:
-        close = float(prev_close[ticker])
-        if target_residual >= close:
+        price = pricing.get(ticker, 0)
+        if target_residual >= price:
             target_qty[ticker] += 1
-            target_residual -= close
+            target_residual -= price
 
     current_qty = {t: int(v.get("qty") or 0) for t, v in db_holdings.items()}
 

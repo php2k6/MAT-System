@@ -16,6 +16,7 @@ from backend.core.security import decrypt_token
 from backend.core.market_feed import get_market_feed_manager
 from backend.models import BrokerSession, StockTicker
 from backend.scheduler import start_scheduler, stop_scheduler
+from starlette.responses import PlainTextResponse
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -29,6 +30,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Allowed hosts parsed from settings (set ALLOWED_HOSTS env var as comma-separated list)
+_ALLOWED_HOSTS: set[str] = {h.strip() for h in settings.allowed_hosts.split(",") if h.strip()}
+
+@app.middleware("http")
+async def host_header_middleware(request: Request, call_next):
+    host = request.headers.get("host", "").split(":")[0]  # strip port
+    if host not in _ALLOWED_HOSTS:
+        return PlainTextResponse("Forbidden", status_code=403)
+    return await call_next(request)
 
 
 @app.middleware("http")
