@@ -11,6 +11,7 @@ import Dashboard from "./pages/Dashboard/Dashboard.jsx";
 import AppLayout from "./components/AppLayout.jsx";
 import History from "./pages/History.jsx";
 import Offline from "./pages/Offline.jsx";
+import Profile from "./pages/Profile.jsx";
 
 function Layout() {
   return (
@@ -36,6 +37,7 @@ function App() {
               <Route path="/dashboard" element={<Home />} />
               <Route path="/deploy" element={<DeployStrategy />} />
               <Route path="/history" element={<History />} />
+              <Route path="/profile" element={<Profile />} />
             </Route>
           </Route>  {/* ← this closing tag was missing */}
 

@@ -136,6 +136,7 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
 @router.post("/change-password")
 def change_password(
     body: ChangePasswordRequest,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -152,7 +153,8 @@ def change_password(
         db.commit()
         logger.info("auth.change_password success user_id=%s", current_user.user_id)
 
-        return {"success": True, "message": "Password updated successfully"}
+        response.delete_cookie(COOKIE_NAME)
+        return {"success": True, "message": "Password updated successfully. Please log in again."}
 
     except HTTPException:
         raise
