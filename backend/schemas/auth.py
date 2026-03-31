@@ -21,3 +21,8 @@ class UserOut(BaseModel):
     createdAt: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ChangePasswordRequest(BaseModel):
+    currentPassword: str
+    newPassword: str
