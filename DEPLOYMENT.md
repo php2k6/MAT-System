@@ -309,6 +309,16 @@ This command:
 5. Configures Nginx as the reverse proxy
 6. Boots all 4 containers on an isolated Docker network
 
+### Initial Data Seeding
+After the first launch (when the database is empty), you MUST seed the tickers and historical price data:
+```bash
+# 1. Ingest all tickers (fast)
+sudo docker exec mat-backend python "data ingestion/ingest_tickers.py"
+
+# 2. Ingest all historical price data (this takes a few minutes for 88MB CSV)
+sudo docker exec mat-backend python "data ingestion/ingest_all.py"
+```
+
 ### Verify Everything is Running
 ```bash
 sudo docker ps

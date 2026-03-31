@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy the application
 COPY backend/ /app/backend/
 
+# Copy data ingestion scripts (for initial DB seeding)
+COPY ["data ingestion/", "/app/data ingestion/"]
+
 # Ensures modules like `from backend.models...` run correctly from the /app root
 ENV PYTHONPATH=/app
 
