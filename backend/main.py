@@ -31,22 +31,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define your allowed domain (move this to your settings)
-ALLOWED_HOSTS = [
-    "mat.phpx.live",  # Production Domain
-    "localhost",      # Local development
-    "127.0.0.1"       # Local development
-]
+# Allowed hosts parsed from settings (set ALLOWED_HOSTS env var as comma-separated list)
+_ALLOWED_HOSTS: set[str] = {h.strip() for h in settings.allowed_hosts.split(",") if h.strip()}
 
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
-    host = request.headers.get("host", "").split(":")[0]  # Split to ignore port numbers
-    
-    if host not in ALLOWED_HOSTS:
-        # Return a 403 Forbidden or 444-style empty response
-        # Using 403 tells the bot "You aren't allowed here"
+    host = request.headers.get("host", "").split(":")[0]  # strip port
+    if host not in _ALLOWED_HOSTS:
         return PlainTextResponse("Forbidden", status_code=403)
-    
     return await call_next(request)
 
 

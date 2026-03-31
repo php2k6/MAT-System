@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     # Frontend
     frontend_origin: str = "http://localhost:5173"
 
+    # Allowed host header values (comma-separated). Requests with other Host headers are rejected.
+    allowed_hosts: str = "mat.phpx.live,localhost,127.0.0.1"
+
     # Cookie — set cookie_secure=true when backend is on HTTPS (e.g. ngrok)
     cookie_secure: bool = False
 
