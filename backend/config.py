@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     live_price_refresh_seconds: int = 15
     fyers_quotes_chunk_size: int = 50
 
+    # WebSocket live-feed tuning
+    # How often (seconds) the WS loop polls Redis for LTP changes.
+    ws_price_poll_interval: float = 0.1
+    # How often (seconds) the WS loop re-loads holdings+positions from DB.
+    # Only needs to catch post-rebalance changes, so 60s is fine.
+    ws_portfolio_refresh_interval: float = 60.0
+
     # MAT engine runtime controls
     mat_cash_buffer: float = 0.01
     mat_order_wait_seconds: int = 120
