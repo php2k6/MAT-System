@@ -37,6 +37,16 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    path: "/profile",
+    label: "Profile",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="5" r="3" stroke="currentColor" strokeWidth="1.4"/>
+        <path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    ),
+  },
 ];
 
 // ─── SIDEBAR COMPONENT ────────────────────────────────────────────────────────
