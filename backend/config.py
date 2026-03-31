@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     # Frontend
     frontend_origin: str = "http://localhost:5173"
 
+    # Allowed host header values (comma-separated). Requests with other Host headers are rejected.
+    allowed_hosts: str = "mat.phpx.live,localhost,127.0.0.1"
+
     # Cookie — set cookie_secure=true when backend is on HTTPS (e.g. ngrok)
     cookie_secure: bool = False
 
@@ -30,6 +33,13 @@ class Settings(BaseSettings):
     live_price_stale_after_seconds: int = 90
     live_price_refresh_seconds: int = 15
     fyers_quotes_chunk_size: int = 50
+
+    # WebSocket live-feed tuning
+    # How often (seconds) the WS loop polls Redis for LTP changes.
+    ws_price_poll_interval: float = 0.1
+    # How often (seconds) the WS loop re-loads holdings+positions from DB.
+    # Only needs to catch post-rebalance changes, so 60s is fine.
+    ws_portfolio_refresh_interval: float = 60.0
 
     # MAT engine runtime controls
     mat_cash_buffer: float = 0.01

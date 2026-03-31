@@ -28,13 +28,6 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
-class RootNoiseFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        # Keep backend.log concise: suppress verbose rebalance engine chatter.
-        if record.name.startswith("backend.mat_engine") and record.levelno < logging.WARNING:
-            return False
-        return True
-
 
 def _ist_converter(timestamp: float):
     return datetime.fromtimestamp(timestamp, tz=_IST).timetuple()
@@ -61,13 +54,11 @@ def configure_logging() -> None:
     formatter = logging.Formatter(fmt=fmt, datefmt="%Y-%m-%d %H:%M:%S")
     formatter.converter = _ist_converter
     req_filter = RequestIdFilter()
-    noise_filter = RootNoiseFilter()
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
     console_handler.addFilter(req_filter)
-    console_handler.addFilter(noise_filter)
 
     file_handler = logging.handlers.RotatingFileHandler(
         filename=log_file,
@@ -78,7 +69,6 @@ def configure_logging() -> None:
     file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(req_filter)
-    file_handler.addFilter(noise_filter)
 
     root.handlers.clear()
     root.addHandler(console_handler)
