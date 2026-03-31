@@ -250,7 +250,7 @@ export default function Dashboard() {
  
   // Stat cards
   const invested    = Number(summary?.invested ?? 0);
-  const pnl         = equity + cash - invested;
+  const pnl         = equity - invested;
   const pnlPct      = invested > 0 ? (pnl / invested) * 100 : 0;
   const pnlPos      = pnl >= 0;
  
