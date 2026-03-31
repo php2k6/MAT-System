@@ -63,6 +63,33 @@ def _is_market_hours() -> bool:
     return market_open <= minutes <= market_close
 
 
+def _is_nse_cm_open(fyers: fyersModel.FyersModel) -> bool:
+    """
+    Check if NSE Capital Market (exchange=10, segment=10) is OPEN via
+    the Fyers market_status() API. This correctly handles NSE holidays
+    that a pure time-based check cannot detect.
+    Falls back to False on any error (safe default — don’t trade if unsure).
+    """
+    try:
+        resp = fyers.market_status()
+        if resp.get("s") != "ok":
+            logger.warning(
+                "_is_nse_cm_open: market_status returned s=%s code=%s",
+                resp.get("s"), resp.get("code"),
+            )
+            return False
+        for seg in resp.get("marketStatus", []):
+            if int(seg.get("exchange", -1)) == 10 and int(seg.get("segment", -1)) == 10:
+                status = str(seg.get("status", "")).upper()
+                logger.info("_is_nse_cm_open: NSE Capital Market status=%s", status)
+                return status == "OPEN"
+        logger.warning("_is_nse_cm_open: NSE Capital Market segment not found in response")
+        return False
+    except Exception:
+        logger.exception("_is_nse_cm_open: failed to check market status — assuming closed")
+        return False
+
+
 def _iter_chunks(items: list[str], size: int):
     for i in range(0, len(items), size):
         yield items[i : i + size]
@@ -743,6 +770,29 @@ def drain_rebalance_queue() -> None:
                 .all()
             )
 
+        # ── Market-open check (once for all entries) ────────────────────────────
+        # Prefer Fyers market_status() (handles NSE holidays correctly);
+        # fall back to time check if no broker session exists today.
+        mkt_fyers  = _get_any_active_fyers(db)
+        if mkt_fyers:
+            market_open = _is_nse_cm_open(mkt_fyers)
+        else:
+            market_open = _is_market_hours()
+            logger.warning(
+                "drain_rebalance_queue: no Fyers session today, using time-based market check"
+            )
+
+        if not market_open:
+            logger.warning(
+                "drain_rebalance_queue: market closed — skipping %d pending entries", len(pending)
+            )
+            for entry in pending:
+                entry.status      = "skipped"
+                entry.reason      = "MARKET_CLOSED"
+                entry.retry_count = (entry.retry_count or 0) + 1
+            db.commit()
+            return
+
         for entry in pending:
             entry_id = entry.id   # save before any potential rollback
             logger.info(
@@ -787,6 +837,21 @@ def drain_rebalance_queue() -> None:
                     )
 
                 db.commit()
+
+                # Immediately sync broker ground truth after a successful rebalance.
+                # broker_reconcile_snapshot() opens its own session — runs cleanly
+                # after mat_engine's session has committed above.
+                if result.success:
+                    try:
+                        broker_reconcile_snapshot()
+                        logger.info(
+                            "drain_rebalance_queue: broker_reconcile done entry=%s", entry_id
+                        )
+                    except Exception:
+                        logger.exception(
+                            "drain_rebalance_queue: broker_reconcile failed entry=%s (non-fatal)",
+                            entry_id,
+                        )
 
             except Exception as exc:
                 # Engine called db.rollback() before raising — re-fetch entry
