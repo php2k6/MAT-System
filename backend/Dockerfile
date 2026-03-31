@@ -10,12 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
-COPY requirements.txt /app/backend/requirements.txt
+COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Copy the application
-COPY . /app/backend/
+COPY backend/ /app/backend/
 
 # Ensures modules like `from backend.models...` run correctly from the /app root
 ENV PYTHONPATH=/app
