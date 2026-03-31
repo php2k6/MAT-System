@@ -1,0 +1,68 @@
+name: mat-system
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: mat-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: yourpassword
+      POSTGRES_DB: mat_system
+    # No ports mapped to the host (Strict Security - No Leaking)
+    # The database is only accessible to containers inside this logical network.
+    volumes:
+      - mat_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mat_system"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mat-redis
+    restart: always
+    # No ports mapped to the host (Strict Security)
+    # Allows Fyers WS caching away from external snoopers
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: mat-backend
+    restart: always
+    # No ports mapped to the host (Internal Reverse Proxy via Frontend handles this)
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Uses the shared exact env configurations
+    env_file:
+      - backend/.env
+    # Optionally override Postgres/Redis URLs inside docker networking if .env specifies localhost explicitly
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:yourpassword@db:5432/mat_system
+      - REDIS_URL=redis://redis:6379/0
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mat-frontend
+    restart: always
+    depends_on:
+      - backend
+    # This acts as your secure Edge Router (Nginx)
+    # Binds internally 80 to your Local PC's 80.
+    ports:
+      - "80:80"
+
+volumes:
+  mat_pgdata:
