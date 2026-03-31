@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from backend.database import get_db
 from backend.models import User, UserBrokerLink
-from backend.schemas.auth import RegisterRequest, LoginRequest, UserOut
+from backend.schemas.auth import RegisterRequest, LoginRequest, UserOut, ChangePasswordRequest
 from backend.core.security import hash_password, verify_password, create_access_token
 from backend.core.deps import get_current_user
 from backend.config import settings
@@ -126,6 +126,39 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
         raise
     except Exception:
         logger.exception("auth.login server error email=%s", body.email)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"success": False, "message": "Server error"},
+        )
+
+
+# ── POST /api/auth/change-password ────────────────────────────────────────────
+@router.post("/change-password")
+def change_password(
+    body: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    logger.info("auth.change_password attempt user_id=%s", current_user.user_id)
+    try:
+        if not verify_password(body.currentPassword, current_user.password):
+            logger.warning("auth.change_password invalid current password user_id=%s", current_user.user_id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"success": False, "message": "Incorrect current password"},
+            )
+
+        current_user.password = hash_password(body.newPassword)
+        db.commit()
+        logger.info("auth.change_password success user_id=%s", current_user.user_id)
+
+        return {"success": True, "message": "Password updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception("auth.change_password server error user_id=%s", current_user.user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"success": False, "message": "Server error"},
