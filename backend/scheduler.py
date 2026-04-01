@@ -770,6 +770,13 @@ def drain_rebalance_queue() -> None:
                 .all()
             )
 
+        if pending:
+            logger.info("drain_rebalance_queue: %d entries pending. Triggering pre-rebalance reconciliation.", len(pending))
+            try:
+                broker_reconcile_snapshot()
+            except Exception:
+                logger.exception("drain_rebalance_queue: pre-rebalance reconciliation failed (continuing anyway)")
+
         # ── Market-open check (once for all entries) ────────────────────────────
         # Prefer Fyers market_status() (handles NSE holidays correctly);
         # fall back to time check if no broker session exists today.

@@ -55,6 +55,8 @@ from backend.core.security import decrypt_token
 from backend.core.time_utils import now_ist
 from backend.models import (
     BrokerSession,
+    Holdings,
+    Portfolio,
     RebalanceOrderLeg,
     RebalanceQueue,
     RebalancingHistory,

@@ -739,6 +739,13 @@ def force_rebalance_now(
     db.refresh(entry)
 
     try:
+        # Pre-rebalance snapshot (symmetry with scheduler.py)
+        try:
+            from backend.scheduler import broker_reconcile_snapshot
+            broker_reconcile_snapshot()
+        except Exception:
+            logger.exception("strategy.testing.force_rebalance: pre-rebalance broker_reconcile failed (continuing anyway)")
+
         result = MATEngine(entry, db).run_rebalance()
         if result.skipped:
             entry.status = "skipped"
@@ -861,6 +868,13 @@ def mock_rebalance_preview(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"success": False, "message": f"Unable to fetch funds from broker: {exc}"},
         )
+
+    # Sync ground-truth from broker to DB so mock preview is perfectly accurate
+    try:
+        from backend.scheduler import broker_reconcile_snapshot
+        broker_reconcile_snapshot()
+    except Exception:
+        logger.exception("strategy.testing.mock_rebalance: pre-rebalance broker_reconcile failed")
 
     db_holdings = engine._load_db_holdings()
     held_tickers = list(db_holdings.keys())
