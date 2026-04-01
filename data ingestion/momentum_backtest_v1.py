@@ -5,9 +5,9 @@ import matplotlib.ticker as mticker
 
 # ── CONFIG ──────────────────────────────────────────────────────
 CSV_PATH         = "nifty250_log_return_volatility.csv"
-UNIVERSE         = "nifty250"
-INITIAL_CAPITAL  = 1_000_000
-START_DATE       = "2020-03-20"   # ← replaces START_YEAR; format: "YYYY-MM-DD"
+UNIVERSE         = "nifty50"
+INITIAL_CAPITAL  = 10_000
+START_DATE       = "2025-01-01"   # ← replaces START_YEAR; format: "YYYY-MM-DD"
 
 # ── REBALANCE FREQUENCY ─────────────────────────────────────────
 # Set REBALANCE_FREQ to either:
@@ -25,9 +25,9 @@ LOOKBACK_2       = 12
 SKIP_MONTHS      = 0
 WEIGHT_1         = 0.5
 WEIGHT_2         = 0.5
-N_STOCKS         = 10
+N_STOCKS         = 1
 MIN_PRICE        = 1.0
-MAX_PRICE        = 100_000
+MAX_PRICE        = 200
 CASH_BUFFER      = 0.005
 
 BROKERAGE        = 0.0003
@@ -81,6 +81,7 @@ def get_rebalance_dates(all_dates):
         if idx < len(trading_days):
             rebalance_dates.add(trading_days[idx])
 
+    print(rebalance_dates)
     return rebalance_dates
 
 def compute_momentum_scores(df):
