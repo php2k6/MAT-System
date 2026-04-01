@@ -65,28 +65,48 @@ def _is_market_hours() -> bool:
 
 def _is_nse_cm_open(fyers: fyersModel.FyersModel) -> bool:
     """
-    Check if NSE Capital Market (exchange=10, segment=10) is OPEN via
-    the Fyers market_status() API. This correctly handles NSE holidays
-    that a pure time-based check cannot detect.
-    Falls back to False on any error (safe default — don’t trade if unsure).
+    NSE Capital Market open check using Fyers market_status():
+    exchange=10, segment=10, market_type=NORMAL only.
     """
     try:
         resp = fyers.market_status()
-        if resp.get("s") != "ok":
+        if str(resp.get("s", "")).lower() != "ok":
             logger.warning(
-                "_is_nse_cm_open: market_status returned s=%s code=%s",
-                resp.get("s"), resp.get("code"),
+                "_is_nse_cm_open: market_status not ok s=%s code=%s",
+                resp.get("s"),
+                resp.get("code"),
             )
             return False
-        for seg in resp.get("marketStatus", []):
-            if int(seg.get("exchange", -1)) == 10 and int(seg.get("segment", -1)) == 10:
-                status = str(seg.get("status", "")).upper()
-                logger.info("_is_nse_cm_open: NSE Capital Market status=%s", status)
-                return status == "OPEN"
-        logger.warning("_is_nse_cm_open: NSE Capital Market segment not found in response")
+
+        rows = resp.get("marketStatus", []) or []
+        normal_row = None
+        candidates = []
+
+        for seg in rows:
+            ex = int(seg.get("exchange", -1))
+            sg = int(seg.get("segment", -1))
+            mt = str(seg.get("market_type", "")).upper()
+            st = str(seg.get("status", "")).upper()
+
+            if ex == 10 and sg == 10:
+                candidates.append(f"{mt}:{st}")
+                if mt == "NORMAL":
+                    normal_row = seg
+                    break
+
+        if normal_row:
+            status = str(normal_row.get("status", "")).upper()
+            logger.info("_is_nse_cm_open: NSE CM NORMAL status=%s", status)
+            return status == "OPEN"
+
+        logger.warning(
+            "_is_nse_cm_open: NSE CM NORMAL row not found; candidates=%s",
+            ",".join(candidates) if candidates else "none",
+        )
         return False
+
     except Exception:
-        logger.exception("_is_nse_cm_open: failed to check market status — assuming closed")
+        logger.exception("_is_nse_cm_open: failed to check market status; assuming closed")
         return False
 
 
