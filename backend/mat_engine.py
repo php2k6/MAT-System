@@ -463,10 +463,12 @@ class MATEngine:
                     "ticker": ticker,
                     "requestedQty": int(qty),
                     "status": "placement_failed",
+                    "errorCode": "ORDER_PLACE_FAILED",
                     "error": str(e),
+                    "isRetryable": True,
                 })
                 logger.error("MATEngine: sell placement failed for %s: %s", ticker, e)
-                return _done(RebalanceResult(success=False, reason=f"SELL_PLACE_FAILED:{ticker}:{e}"))
+                continue
 
         # Wait for ALL sell fills simultaneously
         sell_fills: dict[str, dict] = {}
