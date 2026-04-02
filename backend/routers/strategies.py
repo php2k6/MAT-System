@@ -1,7 +1,8 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from uuid import UUID
 
 import pandas as pd
@@ -51,6 +52,15 @@ _HISTORY_CLOSED_STATUSES = {"completed", "completed_ignored", "skipped"}
 _LEG_OPEN_STATUSES = {"planned", "placed", "partial", "failed"}
 
 
+def _to_ist_iso(dt: datetime | None) -> str | None:
+    if not dt:
+        return None
+    ist = ZoneInfo(settings.scheduler_timezone)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ist).isoformat()
+
+
 def _safe_json_load(payload: str | None):
     if not payload:
         return None
@@ -75,8 +85,8 @@ def _serialize_leg(leg: RebalanceOrderLeg) -> dict:
         "errorCode": leg.error_code,
         "errorMessage": leg.error_message,
         "isRetryable": bool(leg.is_retryable),
-        "createdAt": leg.created_at.isoformat() if leg.created_at else None,
-        "updatedAt": leg.updated_at.isoformat() if leg.updated_at else None,
+        "createdAt": _to_ist_iso(leg.created_at),
+        "updatedAt": _to_ist_iso(leg.updated_at),
     }
 
 
@@ -89,15 +99,8 @@ def _history_row_payload(row: RebalancingHistory, legs: list[RebalanceOrderLeg])
         "queueId": str(row.queue_id) if row.queue_id else None,
         "status": row.status,
         "reason": row.reason,
-        "startedAt": row.started_at.isoformat() if row.started_at else None,
-        "completedAt": row.completed_at.isoformat() if row.completed_at else None,
-        "preCash": float(row.pre_cash) if row.pre_cash is not None else None,
-        "postCash": float(row.post_cash) if row.post_cash is not None else None,
-        "preTotal": float(row.pre_total) if row.pre_total is not None else None,
-        "postTotal": float(row.post_total) if row.post_total is not None else None,
-        "preHoldings": _safe_json_load(row.pre_holdings_json),
-        "postHoldings": _safe_json_load(row.post_holdings_json),
-        "orders": _safe_json_load(row.orders_json),
+        "startedAt": _to_ist_iso(row.started_at),
+        "completedAt": _to_ist_iso(row.completed_at),
         "summary": _safe_json_load(row.summary_json),
         "legs": [_serialize_leg(leg) for leg in legs],
         "legsMeta": {
