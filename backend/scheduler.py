@@ -703,7 +703,7 @@ def queue_rebalances() -> None:
                 db.query(RebalanceQueue)
                 .filter(
                     RebalanceQueue.strat_id == strat.strat_id,
-                    RebalanceQueue.status.in_(["pending", "in_progress"]),
+                    RebalanceQueue.status.in_(["pending", "in_progress", "skipped"]),
                 )
                 .first()
             )
@@ -773,10 +773,12 @@ def drain_rebalance_queue() -> None:
     db  = SessionLocal()
     now = now_ist()
     try:
+        logger.info("drain_rebalance_queue: started at=%s", now.isoformat())
         try:
             pending = (
                 db.query(RebalanceQueue)
-                .filter(RebalanceQueue.status == "pending")
+                .filter(RebalanceQueue.status.in_(["pending", "skipped"]))
+                .order_by(RebalanceQueue.queued_at.asc(), RebalanceQueue.attempted_at.asc())
                 .all()
             )
         except OperationalError:
@@ -786,12 +788,19 @@ def drain_rebalance_queue() -> None:
             db = SessionLocal()
             pending = (
                 db.query(RebalanceQueue)
-                .filter(RebalanceQueue.status == "pending")
+                .filter(RebalanceQueue.status.in_(["pending", "skipped"]))
+                .order_by(RebalanceQueue.queued_at.asc(), RebalanceQueue.attempted_at.asc())
                 .all()
             )
 
         if pending:
-            logger.info("drain_rebalance_queue: %d entries pending. Triggering pre-rebalance reconciliation.", len(pending))
+            skipped_count = sum(1 for entry in pending if entry.status == "skipped")
+            pending_count = len(pending) - skipped_count
+            logger.info(
+                "drain_rebalance_queue: %d pending, %d skipped entries queued. Triggering pre-rebalance reconciliation.",
+                pending_count,
+                skipped_count,
+            )
             try:
                 broker_reconcile_snapshot()
             except Exception:
@@ -828,6 +837,13 @@ def drain_rebalance_queue() -> None:
                 entry.strat_id,
                 entry.user_id,
             )
+            if entry.status == "skipped":
+                logger.info(
+                    "drain_rebalance_queue: retrying skipped entry=%s reason=%s retry_count=%s",
+                    entry_id,
+                    entry.reason,
+                    entry.retry_count,
+                )
 
             # Mark in-progress and commit so other workers don't double-pick
             entry.status       = "in_progress"
