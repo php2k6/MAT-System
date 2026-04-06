@@ -105,7 +105,7 @@ def _load_portfolio_from_db(db, strat_id: str) -> dict:
     }
     positions = {
         r.ticker: {"qty": int(r.qty or 0), "avg_price": float(r.avg_price or 0), "last_price": float(r.last_price or 0)}
-        for r in positions_rows if r.qty and r.qty > 0
+        for r in positions_rows if int(r.qty or 0) != 0
     }
     tickers = sorted(set(holdings) | set(positions))
     return {"holdings": holdings, "positions": positions, "tickers": tickers}
