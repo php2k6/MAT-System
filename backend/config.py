@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     # Evolution API (WhatsApp notifications)
     evolution_api_url: str = ""
     evolution_api_key: str = ""
+    evolution_api_instance: str = ""
 
     class Config:
         env_file = str(_ENV_FILE)
