@@ -1,622 +1,416 @@
-# MAT System — Production Deployment Guide
+# MAT System Deployment Guide (Updated)
 
-A complete, step-by-step guide to deploying the MAT System (Momentum Automated Trading) platform on a cloud server using Docker Compose, with HTTPS via Cloudflare.
+This document is the canonical, end-to-end deployment runbook for the current MAT stack.
+It includes everything implemented in the latest setup:
 
----
-
-## Table of Contents
-
-1. [Architecture Overview](#1-architecture-overview)
-2. [Prerequisites](#2-prerequisites)
-3. [Server Setup](#3-server-setup)
-4. [Clone & Configure](#4-clone--configure)
-5. [Environment Variables](#5-environment-variables)
-6. [Build & Launch](#6-build--launch)
-7. [Domain & HTTPS Setup (Cloudflare)](#7-domain--https-setup-cloudflare)
-8. [Fyers Broker Configuration](#8-fyers-broker-configuration)
-9. [Day-to-Day Operations](#9-day-to-day-operations)
-10. [Updating the Application](#10-updating-the-application)
-11. [Troubleshooting](#11-troubleshooting)
-12. [FAQ](#12-faq)
+- Dockerized frontend, backend, postgres, redis, and Evolution API
+- Cloudflare DNS and TLS with Full (strict)
+- HTTPS enabled on origin (Nginx in frontend container, ports 80 and 443)
+- Dedicated Evolution Manager host: manager.example.com
+- Backend WhatsApp integration through Evolution API
+- Rebalance queue and completion notifications with detailed leg summaries
 
 ---
 
-## 1. Architecture Overview
+## 1. Current Architecture
 
-Docker Compose orchestrates **5 isolated containers** on a single private network:
+Internet traffic reaches only the frontend Nginx container.
+All other services are private on the Docker network.
 
-```
-                    ┌─────────────────────────────────────────────┐
-                    │            Docker Internal Network           │
-   Internet         │                                             │
-   (Port 80) ──────▶│  ┌──────────┐     ┌──────────┐             │
-                    │  │ Frontend │────▶│ Backend  │             │
-                    │  │ (Nginx)  │     │ (FastAPI)│             │
-                    │  └──────────┘     └────┬─────┘             │
-                    │                        │                    │
-                    │              ┌─────────┴─────────┐         │
-                    │              │                    │         │
-                    │         ┌────▼────┐         ┌────▼────┐    │
-                    │         │  Redis  │         │Postgres │    │
-                    │         │ (Cache) │         │  (DB)   │    │
-                    │         └────┬────┘         └─────────┘    │
-                    │              │                               │
-                    │         ┌────▼──────────┐                    │
-                    │         │ Evolution API │                    │
-                    │         │ (WhatsApp)    │                    │
-                    │         └───────────────┘                    │
-                    └─────────────────────────────────────────────┘
-```
+- Public hosts:
+- https://_ -> React app + /api reverse proxy
+- https://manager.example.com/manager/ -> Evolution Manager UI
 
-| Container | Role | Exposed to Internet? |
-|---|---|---|
-| **Frontend (Nginx)** | Serves React app, reverse-proxies `/api/` to backend | ✅ Port 80 only |
-| **Backend (FastAPI)** | Python API, scheduler, Fyers engine | ❌ Internal only |
-| **PostgreSQL** | Users, strategies, trades, holdings | ❌ Internal only |
-| **Redis** | Live price cache (sub-100ms LTP streaming) | ❌ Internal only |
-| **Evolution API** | WhatsApp message gateway | ❌ Internal only |
-
-> **Security:** Only Nginx is publicly accessible. The database, cache, and backend API are completely invisible to the internet. Nginx acts as the sole edge gateway.
+- Internal services:
+- backend:8000 (FastAPI)
+- evolution-api:8080 (Evolution API)
+- db:5432 (Postgres)
+- redis:6379 (Redis)
 
 ---
 
 ## 2. Prerequisites
 
-You need **only two things** installed on your server:
+Install on server:
 
-1. **Docker Engine** — [Install Guide](https://docs.docker.com/engine/install/ubuntu/)
-2. **Docker Compose** (included with Docker Engine v2+)
+1. Docker Engine
+2. Docker Compose v2
 
-You do **NOT** need to install Python, Node.js, Nginx, PostgreSQL, or Redis. Docker downloads and manages all of them automatically inside containers.
+Optional:
 
-### Verify Installation
+1. Git
+2. curl
+
+Verify:
+
 ```bash
-docker --version        # Should show 24.x or higher
-docker compose version  # Should show v2.x or higher
-```
-
-### (Optional) Run Docker Without `sudo`
-```bash
-sudo usermod -aG docker $USER
-newgrp docker
-```
-
----
-
-## 3. Server Setup
-
-### 3.1 Recommended Providers
-| Provider | Free Tier? | Notes |
-|---|---|---|
-| Oracle Cloud | ✅ Always Free (ARM 4 OCPU, 24GB RAM) | Best free option, requires firewall setup |
-| DigitalOcean | ❌ ($6/mo) | Simplest setup |
-| AWS EC2 | 12-month free tier | More complex networking |
-| Hetzner | ❌ (€4/mo) | Best price-performance in EU |
-
-### 3.2 Firewall Configuration
-
-#### Oracle Cloud (Double Firewall — Both Steps Required!)
-
-**Step A: Oracle Cloud Dashboard**
-1. Go to **Networking → Virtual Cloud Networks (VCN)**
-2. Click your VCN → Subnet → Default Security List
-3. Click **Add Ingress Rules**:
-   - Source CIDR: `0.0.0.0/0`
-   - Source Port Range: *(Leave Blank)*
-   - Destination Port Range: `80`
-   - Click **Add Ingress Rule**
-4. Repeat for port `443`
-
-**Step B: Server Terminal (Ubuntu on Oracle)**
-```bash
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
-sudo apt install iptables-persistent -y
-sudo netfilter-persistent save
-```
-
-#### DigitalOcean / AWS
-- DigitalOcean: Networking → Firewalls → Allow HTTP (80) and HTTPS (443)
-- AWS: EC2 → Security Groups → Edit Inbound Rules → Add HTTP and HTTPS from `0.0.0.0/0`
-
-#### Ubuntu with UFW
-```bash
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
+docker --version
+docker compose version
 ```
 
 ---
 
-## 4. Clone & Configure
+## 3. Clone Project
 
 ```bash
-# Clone the repository
 git clone https://github.com/php2k6/MAT-System.git
 cd MAT-System
 ```
 
 ---
 
-## 5. Environment Variables
+## 4. Environment Files
 
-### 5.1 Environment Files Used
+Use these files only:
 
-| File | Purpose | When is it read? |
-|---|---|---|
-| `backend/.env` | Local backend runtime config (API keys, scheduler, DB URL, WhatsApp config) | **Runtime** |
-| `frontend/.env` | `VITE_API_BASE_URL` | **Build time** — baked into JavaScript during `npm run build` |
+1. backend/.env
+2. frontend/.env
 
-For local development and docker-compose deployments, use only `backend/.env` for backend settings.
+Do not use root-level .env files for this deployment.
 
-### 5.2 Frontend `.env` (Set Once, Never Change)
-
-```bash
-echo "VITE_API_BASE_URL=/api" > frontend/.env
-```
-
-This uses a relative URL (`/api`), which means the browser automatically prepends whatever domain the user is on. **You never need to change this again**, regardless of which domain you use.
-
-### 5.3 Backend `.env` (Full Production Template)
-
-Create the file:
-```bash
-nano backend/.env
-```
-
-Paste the following and edit the marked values:
+### 4.1 frontend/.env
 
 ```env
-# ═══════════════════════════════════════════════════════
-# SECTION 1: NETWORKING & SECURITY
-# ═══════════════════════════════════════════════════════
+VITE_API_BASE_URL=/api
+```
 
-# Your domain (comma-separated). MUST match what users type in their browser.
-ALLOWED_HOSTS=127.0.0.1,yourdomain.com
+### 4.2 backend/.env (minimum required)
 
-# Frontend origin for CORS. MUST include https:// if using Cloudflare.
-FRONTEND_ORIGIN=https://yourdomain.com
-
-# Set to true when behind HTTPS (Cloudflare, etc.)
-COOKIE_SECURE=true
-
-# ═══════════════════════════════════════════════════════
-# SECTION 2: DATABASE & CACHE (Docker Internal Routing)
-# ═══════════════════════════════════════════════════════
-# IMPORTANT: Use 'db' and 'redis' as hostnames, NOT 'localhost'.
-# Docker's internal DNS routes these to the correct containers.
-
+```env
+# Core
 DATABASE_URL=postgresql+psycopg2://postgres:yourpassword@db:5432/mat_system
 REDIS_URL=redis://redis:6379/0
-REDIS_PRICE_TTL_SECONDS=900
-LIVE_PRICE_STALE_AFTER_SECONDS=90
-LIVE_PRICE_REFRESH_SECONDS=15
-FYERS_QUOTES_CHUNK_SIZE=50
 
-# ═══════════════════════════════════════════════════════
-# SECTION 3: AUTHENTICATION SECRETS
-# ═══════════════════════════════════════════════════════
-# Generate a strong random key (e.g. mash your keyboard for 30+ chars)
+# Hosts and CORS
+ALLOWED_HOSTS=_,manager.example.com,localhost,127.0.0.1
+FRONTEND_ORIGIN=https://_
+COOKIE_SECURE=true
 
-JWT_SECRET_KEY=CHANGE_THIS_TO_A_RANDOM_STRING_30_CHARS_OR_MORE
+# Auth
+JWT_SECRET_KEY=replace_with_long_random_secret
 JWT_ALGORITHM=HS256
 JWT_EXPIRE_MINUTES=10080
 
-# ═══════════════════════════════════════════════════════
-# SECTION 4: FYERS BROKER API
-# ═══════════════════════════════════════════════════════
-# Get these from https://myapi.fyers.in after registering your app.
-
+# Fyers
 FYERS_APP_ID=YOUR_APP_ID-100
-FYERS_SECRET_KEY=YOUR_SECRET_KEY
-FYERS_REDIRECT_URI=https://yourdomain.com/api/broker/callback
+FYERS_SECRET_KEY=YOUR_SECRET
+FYERS_REDIRECT_URI=https://_/api/broker/callback
 
-# ═══════════════════════════════════════════════════════
-# SECTION 5: WEBSOCKET TUNING
-# ═══════════════════════════════════════════════════════
+# Evolution API
+EVOLUTION_API_URL=http://evolution-api:8080
+EVOLUTION_API_KEY=replace_with_evolution_global_api_key
+EVOLUTION_API_INSTANCE=mat-system
 
-WS_PRICE_POLL_INTERVAL=0.1
-WS_PORTFOLIO_REFRESH_INTERVAL=60.0
-
-# ═══════════════════════════════════════════════════════
-# SECTION 6: MAT ENGINE CONFIGURATION
-# ═══════════════════════════════════════════════════════
-
-MAT_CASH_BUFFER=0.01
-MAT_BROKERAGE_RATE=0.3
-MAT_STT_SELL_RATE=0.001
-MAT_EXCHANGE_CHARGE_RATE=0.0000325
-MAT_SEBI_CHARGE_RATE=0.000001
-MAT_GST_RATE=0.18
-MAT_STAMP_DUTY_BUY_RATE=0.00015
-MAT_ORDER_WAIT_SECONDS=120
-MAT_ORDER_POLL_INTERVAL_SECONDS=5
-MAT_ORDER_MIN_INTERVAL_SECONDS=0.11
-MAT_CANDIDATE_POOL_MULTIPLIER=1.5
-
-# ═══════════════════════════════════════════════════════
-# SECTION 7: LOGGING
-# ═══════════════════════════════════════════════════════
-
-LOG_LEVEL=INFO
-LOG_DIR=logs
-LOG_FILE_NAME=backend.log
-REBALANCE_LOG_FILE_NAME=rebalancing.log
-LOG_MAX_BYTES=5242880
-LOG_BACKUP_COUNT=5
-
-# ═══════════════════════════════════════════════════════
-# SECTION 8: SCHEDULER
-# ═══════════════════════════════════════════════════════
-
-ENABLE_TESTING_ENDPOINTS=false
-ENABLE_SCHEDULER=true
-SCHEDULER_TIMEZONE=Asia/Kolkata
-
-QUEUE_REBALANCE_HOUR_IST=9
-QUEUE_REBALANCE_MINUTE_IST=0
-DRAIN_REBALANCE_HOUR_IST=12
-DRAIN_REBALANCE_MINUTE_IST=0
-MARKET_OPEN_HOUR_IST=9
-MARKET_OPEN_MINUTE_IST=15
-MARKET_CLOSE_HOUR_IST=15
-MARKET_CLOSE_MINUTE_IST=30
-
-EOD_MTM_HOUR_IST=15
-EOD_MTM_MINUTE_IST=40
-
-RECONCILE_OPEN_HOUR_IST=9
-RECONCILE_OPEN_MINUTE_IST=20
-
-# ═══════════════════════════════════════════════════════
-# SECTION 9: YAHOO FINANCE DATA SYNC
-# ═══════════════════════════════════════════════════════
-
-ENABLE_YAHOO_DAILY_SYNC=false
-YAHOO_DAILY_SYNC_HOUR_IST=19
-YAHOO_DAILY_SYNC_MINUTE_IST=0
-YAHOO_REFERENCE_TICKER=NIFTYBEES.NS
-YAHOO_BASE_DATE=2015-01-01
-YAHOO_SPLIT_LOOKBACK_DAYS=5
-YAHOO_VOLATILITY_WINDOW=252
-YAHOO_ANNUALISE_VOL=false
-YAHOO_API_DELAY_SECONDS=0.2
-YAHOO_FETCH_RETRIES=3
-YAHOO_FETCH_RETRY_DELAY_SECONDS=1.0
-YAHOO_MAX_INTERNAL_GAP_DAYS=40
+# Testing utility endpoint
+ENABLE_TESTING_ENDPOINTS=true
 ```
 
-Save with `CTRL+O`, `Enter`, `CTRL+X`.
+Important:
 
-### 5.4 Docker Compose Database Credentials
-
-The `docker-compose.yml` file contains the Postgres credentials that Docker uses to create the database:
-
-```yaml
-environment:
-  POSTGRES_USER: postgres
-  POSTGRES_PASSWORD: yourpassword    # ← Change this
-  POSTGRES_DB: mat_system
-```
-
-**The password here must match exactly what you put in `DATABASE_URL` inside `backend/.env`.** If you change one, change both.
+1. DATABASE_URL password must match docker-compose postgres password.
+2. EVOLUTION_API_KEY must match Evolution AUTHENTICATION_API_KEY.
+3. EVOLUTION_API_INSTANCE must match the instance name created in Manager.
 
 ---
 
-## 6. Build & Launch
+## 5. TLS Certificates on Origin (Cloudflare Origin Cert)
 
-### First-Time Launch
-```bash
-sudo docker compose up -d --build
-```
+Origin TLS is enabled in frontend Nginx container.
+Certificates are mounted from frontend/certs.
 
-This command:
-1. Downloads PostgreSQL 15, Redis 7, Python 3.12, Node 20, and Nginx Alpine images
-2. Creates the database with your credentials
-3. Installs all Python packages (`requirements.txt`)
-4. Compiles the React frontend with Vite
-5. Configures Nginx as the reverse proxy
-6. Boots all 5 containers on an isolated Docker network
+### 5.1 Create cert in Cloudflare
 
-### 6.1 Link WhatsApp in Evolution API
+Cloudflare -> SSL/TLS -> Origin Server -> Create certificate
 
-After `docker compose up -d --build` completes:
+Use hostnames:
 
-1. Open `http://localhost:8080`
-2. Create an Evolution instance
-3. Scan the QR from WhatsApp mobile app (`Linked Devices`)
-4. Copy the generated API key
-5. Set `EVOLUTION_API_KEY` in `backend/.env`
-6. Restart backend:
+1. phpx.live
+2. *.phpx.live
 
-```bash
-sudo docker compose restart backend
-```
+Download:
 
-Use the correct API URL per runtime:
+1. certificate
+2. private key
 
-- Local backend run: `EVOLUTION_API_URL=http://localhost:8080`
-- Backend in docker-compose: `EVOLUTION_API_URL=http://evolution-api:8080`
+### 5.2 Save cert files in project
 
-### Initial Data Seeding
-After the first launch (when the database is empty), you MUST seed the tickers and historical price data:
-```bash
-# 1. Ingest all tickers (fast)
-sudo docker exec mat-backend python "data ingestion/ingest_tickers.py"
+Create files:
 
-# 2. Ingest all historical price data (this takes a few minutes for 88MB CSV)
-sudo docker exec mat-backend python "data ingestion/ingest_all.py"
-```
+1. frontend/certs/origin.crt
+2. frontend/certs/origin.key
 
-### Verify Everything is Running
-```bash
-sudo docker ps
-```
-
-You should see 5 containers with status `Up`:
-```
-CONTAINER ID   IMAGE               STATUS                    NAMES
-abc123...      mat-system-frontend  Up 2 minutes              mat-frontend
-def456...      mat-system-backend   Up 2 minutes              mat-backend
-ghi789...      redis:7-alpine       Up 2 minutes (healthy)    mat-redis
-jkl012...      postgres:15-alpine   Up 2 minutes (healthy)    mat-db
-mno345...      atendai/evolution-api Up 2 minutes (healthy)   evolution-api
-```
-
-### 6.2 Save User WhatsApp Number and Send Test Message
-
-1. Login to MAT
-2. Open Profile page
-3. Enter receiver number in WhatsApp field (example: `+9198XXXXXXXX`)
-4. Click `Save WhatsApp`
-5. Click `Send Test Message`
-
-Related API endpoints:
-
-- `PUT /api/auth/profile`
-- `POST /api/auth/testing/whatsapp` (requires `ENABLE_TESTING_ENDPOINTS=true`)
-
-### Quick Test
-```bash
-curl http://localhost
-```
-You should see HTML content from the React app.
+These are ignored by git via frontend/.gitignore.
 
 ---
 
-## 7. Domain & HTTPS Setup (Cloudflare)
+## 6. DNS and Cloudflare Settings
 
-### 7.1 Why Cloudflare?
-Cloudflare provides free, auto-renewing SSL certificates and DDoS protection without modifying any Docker configuration. Your Nginx listens on HTTP port 80, and Cloudflare wraps it in HTTPS for users.
+### 6.1 DNS records
 
-```
-User ──HTTPS:443──▶ Cloudflare ──HTTP:80──▶ Your Nginx Container
-```
+In Cloudflare DNS:
 
-### 7.2 Setup Steps
+1. A record: trade -> <your-server-ip> (Proxied ON)
+2. A record: manager -> <your-server-ip> (Proxied ON)
 
-1. **Buy a domain** (Namecheap, GoDaddy, etc.)
-2. **Sign up at [cloudflare.com](https://cloudflare.com)** (free tier)
-3. **Add your domain** to Cloudflare and update your registrar's nameservers to the ones Cloudflare provides
-4. **Create an A Record** in Cloudflare DNS:
-   - Type: `A`
-   - Name: `@`
-   - Content: Your server's public IP address
-   - Proxy status: **Proxied** (Orange Cloud ON)
-5. **Set SSL Mode**: Go to SSL/TLS → Overview → Select **"Flexible"**
+Note:
 
-### 7.3 Why "Flexible" SSL Mode?
+- manager means manager.example.com
+- manager.trade means manager._
 
-| Mode | What it does | Works with our setup? |
-|---|---|---|
-| **Flexible** | Cloudflare → HTTP:80 → Your server | ✅ Yes |
-| **Full** | Cloudflare → HTTPS:443 → Your server | ❌ No (Nginx has no SSL cert) |
-| **Full (Strict)** | Same as Full but validates cert | ❌ No |
+If you want manager.example.com, record name must be manager.
 
-Your Nginx only listens on port 80 (HTTP). "Flexible" tells Cloudflare to talk to your origin over HTTP while still showing HTTPS to end users.
+### 6.2 SSL mode
 
-### 7.4 Update Backend `.env` After Domain Setup
-```env
-ALLOWED_HOSTS=127.0.0.1,yourdomain.com
-FRONTEND_ORIGIN=https://yourdomain.com
-FYERS_REDIRECT_URI=https://yourdomain.com/api/broker/callback
-COOKIE_SECURE=true
-```
-Then restart:
+Set Cloudflare SSL/TLS mode to Full (strict).
+Do not use Flexible for this setup.
+
+---
+
+## 7. Nginx and Compose (already aligned)
+
+Current setup expects:
+
+1. frontend/nginx.conf with
+- HTTP to HTTPS redirects for _ and manager.example.com
+- 443 SSL servers using /etc/nginx/certs/origin.crt and origin.key
+- /api and docs proxy to backend
+- /evolution proxy to evolution-api
+- /manager redirect on trade host to manager host
+- manager host reverse proxy to evolution-api
+
+2. docker-compose.yml frontend service with
+- ports 80:80 and 443:443
+- mount frontend/nginx.conf to /etc/nginx/conf.d/default.conf
+- mount frontend/certs to /etc/nginx/certs
+
+---
+
+## 8. Build and Start
+
 ```bash
-sudo docker compose restart backend
+docker compose up -d --build
+```
+
+Check:
+
+```bash
+docker compose ps
+```
+
+Expected running containers:
+
+1. mat-frontend
+2. mat-backend
+3. evolution-api
+4. mat-db
+5. mat-redis
+
+---
+
+## 9. Evolution Manager Setup
+
+Open:
+
+1. https://manager.example.com/manager/
+
+Login inputs:
+
+1. Server URL: https://manager.example.com
+2. Global API Key: AUTHENTICATION_API_KEY from evolution-api container config
+
+Then:
+
+1. Create instance named mat-system (or update backend EVOLUTION_API_INSTANCE accordingly)
+2. Connect WhatsApp by scanning QR
+3. Wait for connected status
+
+---
+
+## 10. WhatsApp Integration Behavior (Current)
+
+Backend sends via Evolution using:
+
+1. Instance-aware sendText route
+2. Payload with number and text
+3. Number normalized to digits
+
+Number format to save in profile:
+
+1. +919876543210
+
+No spaces, no dashes.
+
+Test path:
+
+1. Profile page -> save WhatsApp -> send test
+2. API endpoint: POST /api/auth/testing/whatsapp
+
+---
+
+## 11. Rebalance Notifications Included
+
+Scheduler now sends rich formatted WhatsApp notifications for:
+
+1. Queue created (scheduled)
+2. Retry reminder for skipped queue rows
+3. Completion outcome (done/skipped/failed)
+
+Completion message includes:
+
+1. Strategy and queue identifiers
+2. Completion time and reason
+3. Capital snapshot (before and after)
+4. Leg summary counts (filled, partial, failed)
+5. SELL and BUY leg lines with qty, remaining qty, status, and errors
+
+---
+
+## 12. Fyers Configuration
+
+In Fyers app settings, set redirect URL exactly:
+
+1. https://_/api/broker/callback
+
+Must match backend/.env value FYERS_REDIRECT_URI.
+
+---
+
+## 13. Initial Data Seeding
+
+Run once after first clean deployment:
+
+```bash
+docker exec mat-backend python "data ingestion/ingest_tickers.py"
+docker exec mat-backend python "data ingestion/ingest_all.py"
 ```
 
 ---
 
-## 8. Fyers Broker Configuration
+## 14. Day-2 Operations
 
-After deploying, update your Fyers app settings at [myapi.fyers.in](https://myapi.fyers.in):
+### Logs
 
-- **Redirect URL**: `https://yourdomain.com/api/broker/callback`
-
-This must exactly match `FYERS_REDIRECT_URI` in your `backend/.env`.
-
----
-
-## 9. Day-to-Day Operations
-
-### View Live Backend Logs
 ```bash
-sudo docker logs -f mat-backend
-```
-Press `CTRL+C` to stop watching.
-
-### View Logs from Host Filesystem
-Logs are persisted to the `./logs/` directory on your server:
-```bash
-tail -f logs/backend.log
-tail -f logs/rebalancing.log
+docker compose logs -f backend
+docker compose logs -f evolution-api
+docker compose logs -f frontend
 ```
 
-### Check Container Health
+### Restart after env/config changes
+
 ```bash
-sudo docker ps
-sudo docker stats          # Live CPU/RAM usage
+docker compose restart backend
+docker compose restart frontend
+docker compose restart evolution-api
 ```
 
-### Restart a Single Container
-```bash
-sudo docker compose restart backend    # After .env changes
-sudo docker compose restart frontend   # After nginx.conf changes
-```
-
-### Stop Everything
-```bash
-sudo docker compose down
-```
-
-### Stop and Delete All Data (Nuclear Option)
-```bash
-sudo docker compose down -v    # -v deletes the database volume!
-```
-
----
-
-## 10. Updating the Application
-
-When you push new code to GitHub:
+### Pull and deploy updates
 
 ```bash
-# On the server
-cd ~/MAT-System
 git pull origin main
-
-# Rebuild only what changed
-sudo docker compose up -d --build
+docker compose up -d --build
 ```
-
-Docker intelligently caches unchanged layers. If you only changed Python code, only the backend rebuilds (~15s). If you changed React code, only the frontend rebuilds (~30s).
-
-### When to Use `--no-cache`
-Force a complete rebuild if cached layers cause issues:
-```bash
-sudo docker compose build --no-cache
-sudo docker compose up -d
-```
-
-### When You Only Changed `.env` Variables
-No rebuild needed. Just restart:
-```bash
-sudo docker compose restart backend
-```
-
-> **Exception:** If you change `frontend/.env` (`VITE_API_BASE_URL`), you MUST rebuild the frontend because Vite bakes the value into JavaScript at compile time:
-> ```bash
-> sudo docker compose build --no-cache frontend
-> sudo docker compose up -d frontend
-> ```
 
 ---
 
-## 11. Troubleshooting
+## 15. Troubleshooting
 
-### "This site can't be reached" / Connection Timeout
-- **Firewall not open.** See [Section 3.2](#32-firewall-configuration). On Oracle Cloud, you must open ports in BOTH the cloud dashboard AND the server terminal.
-- **Docker not running.** Run `sudo docker ps` to verify containers are up.
+### 15.1 Certificate error for manager host
 
-### Cloudflare Error 523 (Origin Unreachable)
-- Cloudflare can't reach your server on the expected port.
-- Verify firewall rules allow port 80.
-- Verify Cloudflare SSL mode is set to **"Flexible"**, not "Full".
+Symptom:
 
-### Nginx 405 Method Not Allowed
-- Frontend is hitting the wrong URL for API calls.
-- Ensure `frontend/.env` contains `VITE_API_BASE_URL=/api` (relative, not absolute).
-- Ensure `frontend/.dockerignore` does NOT exclude `.env` files.
-- Rebuild frontend with `--no-cache`.
+- This hostname is not covered by a certificate
 
-### CORS Errors in Browser Console
-- `FRONTEND_ORIGIN` in `backend/.env` doesn't match the actual domain.
-- If using HTTPS (Cloudflare), origin must be `https://yourdomain.com`, not `http://`.
+Fix:
 
-### Login Loop / Cookie Not Setting
-- `COOKIE_SECURE=true` but accessing via `http://`.
-- Either use HTTPS (Cloudflare) or set `COOKIE_SECURE=false` for local testing.
+1. Ensure DNS record is manager (not manager.trade) when using manager.example.com
+2. Keep proxy ON
+3. Ensure Cloudflare mode is Full (strict)
+4. Ensure origin cert includes *.phpx.live
+5. Wait for edge cert propagation
 
-### "permission denied" When Running Docker
+### 15.2 Manager blank page
+
+Fix in current architecture:
+
+1. Use dedicated host manager.example.com
+2. Do not serve manager UI under same asset namespace as React app
+
+### 15.3 Backend error: Settings has no attribute EVOLUTION_API_URL
+
+Cause:
+
+- Code referenced uppercase settings fields
+
+Status:
+
+- Fixed to use lowercase settings model fields
+
+### 15.4 Evolution 404 Cannot POST /message/sendText
+
+Cause:
+
+- Wrong route/payload style
+
+Status:
+
+- Fixed to instance-aware sendText behavior with normalized number
+
+### 15.5 Frontend shows Bad Gateway on WhatsApp test
+
+Cause:
+
+- Backend returns 502 when Evolution call fails
+
+Check:
+
 ```bash
-sudo usermod -aG docker $USER
-newgrp docker
+docker compose logs --tail=200 backend evolution-api
 ```
-Or prefix all commands with `sudo`.
 
-### Backend Crashes on Startup
-Check the logs:
-```bash
-sudo docker logs mat-backend
-```
-Common causes:
-- Missing `.env` variables → backend crashes with `ValidationError`
-- Wrong `DATABASE_URL` → cannot connect to `db` container
-- Typo in `REDIS_URL` → cannot connect to `redis` container
+### 15.6 Flexible SSL confusion
 
-### Database Connection Refused
-- Ensure `DATABASE_URL` uses `db:5432` (not `localhost:5432`)
-- Ensure the password matches `POSTGRES_PASSWORD` in `docker-compose.yml`
+Guidance:
+
+- Flexible is not recommended here.
+- Use Full (strict) since origin HTTPS is enabled.
 
 ---
 
-## 12. FAQ
+## 16. Quick Validation Checklist
 
-### Do I need to install Python, Node.js, Nginx, PostgreSQL, or Redis on my server?
-**No.** Docker downloads and manages all of them automatically inside isolated containers. The only software you install on your server is Docker itself.
-
-### Where do I get the Postgres username and password?
-**You make them up!** Docker creates a brand-new, empty database from scratch. You decide the credentials in `docker-compose.yml` and match them in `backend/.env`.
-
-### Is my database exposed to the internet?
-**No.** PostgreSQL and Redis have no `ports:` mapping in `docker-compose.yml`. They exist only on Docker's internal network. The only container reachable from the internet is the Nginx frontend on port 80.
-
-### What happens to my data if I restart Docker?
-**Nothing — it's safe.** PostgreSQL data is stored on a persistent Docker volume (`mat_pgdata`). It survives container restarts, rebuilds, and server reboots.
-
-### What happens to my data if I run `docker compose down`?
-**Still safe.** `down` stops and removes containers but preserves volumes. Only `docker compose down -v` deletes the volume (and your data).
-
-### Do I need to change `docker-compose.yml` when switching domains?
-**No.** Only change `backend/.env` and restart. The Docker infrastructure is domain-agnostic.
-
-### Do I need to rebuild when I change `backend/.env`?
-**No.** Backend `.env` is read at runtime. Just restart:
-```bash
-sudo docker compose restart backend
-```
-
-### Do I need to rebuild when I change `frontend/.env`?
-**Yes.** Vite bakes environment variables into JavaScript at compile time:
-```bash
-sudo docker compose build --no-cache frontend
-sudo docker compose up -d frontend
-```
-
-### Can I run this on my local Windows PC?
-**Yes**, using Docker Desktop for Windows. Use `COOKIE_SECURE=false` and access via `http://localhost`. However, your home router blocks external access — you'd need port forwarding to reach it from the internet.
-
-### How do I get HTTPS without Cloudflare?
-You would need to add a Certbot container to Docker Compose, mount SSL certificates into Nginx, and configure `nginx.conf` to listen on port 443. Certificates expire every 90 days and need auto-renewal. Cloudflare is significantly simpler.
-
-### How much does deployment cost?
-- **Oracle Cloud**: Free forever (Always Free tier)
-- **Domain**: ~₹800/year (Namecheap)
-- **Cloudflare**: Free
-- **Total**: ~₹800/year
+1. https://_ loads app
+2. https://manager.example.com/manager/ loads Evolution Manager
+3. Broker callback URL matches Fyers app
+4. Profile save WhatsApp works
+5. Test WhatsApp sends successfully
+6. Queue and completion notifications arrive with formatted details
 
 ---
 
-## Quick Reference Card
+## 17. Command Reference
 
-| Task | Command |
-|---|---|
-| First-time build & start | `sudo docker compose up -d --build` |
-| View running containers | `sudo docker ps` |
-| View backend logs (live) | `sudo docker logs -f mat-backend` |
-| Restart after `.env` change | `sudo docker compose restart backend` |
-| Pull & deploy new code | `git pull && sudo docker compose up -d --build` |
-| Full rebuild (no cache) | `sudo docker compose build --no-cache && sudo docker compose up -d` |
-| Stop all containers | `sudo docker compose down` |
-| Stop & wipe database | `sudo docker compose down -v` |
+```bash
+# Start/rebuild
+docker compose up -d --build
+
+# Validate compose
+docker compose config
+
+# Service status
+docker compose ps
+
+# Logs
+docker compose logs -f backend
+docker compose logs -f evolution-api
+docker compose logs -f frontend
+
+# Restart selected services
+docker compose restart backend frontend evolution-api
+
+# Stop
+docker compose down
+
+# Stop and remove volumes (destructive)
+docker compose down -v
+```
