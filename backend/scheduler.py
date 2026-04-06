@@ -18,6 +18,7 @@ import logging
 import asyncio
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 
@@ -36,7 +37,18 @@ from backend.core.time_utils import now_ist
 from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
 from backend.core.whatsapp import send_whatsapp_notification
 from backend.database import SessionLocal
-from backend.models import BrokerSession, Holdings, Portfolio, Positions, RebalanceQueue, StockPrice, StockTicker, Strategy
+from backend.models import (
+    BrokerSession,
+    Holdings,
+    Portfolio,
+    Positions,
+    RebalanceOrderLeg,
+    RebalanceQueue,
+    RebalancingHistory,
+    StockPrice,
+    StockTicker,
+    Strategy,
+)
 from fyers_apiv3 import fyersModel
 logger = logging.getLogger(__name__)
 
@@ -124,6 +136,192 @@ def _send_whatsapp_sync(phone: str | None, message: str, title: str) -> None:
         asyncio.run(send_whatsapp_notification(phone, message, title=title))
     except Exception:
         logger.exception("scheduler WhatsApp send failed title=%s", title)
+
+
+def _short_id(value: Any) -> str:
+    raw = str(value or "")
+    return raw[:8] if raw else "-"
+
+
+def _fmt_money(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"Rs {float(value):,.2f}"
+    except Exception:
+        return str(value)
+
+
+def _fmt_dt(value: Any) -> str:
+    if not value:
+        return "-"
+    try:
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            dt = datetime.fromisoformat(str(value))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_IST)
+        return dt.astimezone(_IST).strftime("%d-%b-%Y %I:%M %p IST")
+    except Exception:
+        return str(value)
+
+
+def _format_reason(reason: str | None) -> str:
+    if not reason:
+        return "-"
+    base = str(reason).split(" | ", 1)[0]
+    mapping = {
+        "MARKET_CLOSED": "Market closed",
+        "LC_DETECTED": "Lower circuit detected on sell side",
+        "UC_GLOBAL_EVENT": "Too many target stocks at upper circuit",
+        "ACTION_REQUIRED": "Some legs need manual review",
+        "NO_BROKER_SESSION": "Broker session missing (login required)",
+    }
+    return mapping.get(base, base)
+
+
+def _build_queue_message(strat: Strategy) -> str:
+    return "\n".join([
+        "🌈 *MAT Rebalance Alert*",
+        "",
+        "📋 *Status:* Scheduled",
+        f"🧠 *Strategy:* {_short_id(strat.strat_id)}",
+        f"🗓️ *Run Date:* {now_ist().strftime('%d-%b-%Y')}",
+        "",
+        "🔐 Please keep broker session active before execution window.",
+    ])
+
+
+def _build_retry_message(strat: Strategy, retry_count: int) -> str:
+    return "\n".join([
+        "🔁 *MAT Rebalance Retry*",
+        "",
+        f"🧠 *Strategy:* {_short_id(strat.strat_id)}",
+        f"📌 *Retry Attempt:* {retry_count + 1}",
+        "",
+        "⚠️ Previous run was delayed/skipped.",
+        "🔐 Please login to broker so retry can complete.",
+    ])
+
+
+def _build_legs_section(legs: list[RebalanceOrderLeg], price_map: dict[tuple[str, str], float]) -> list[str]:
+    if not legs:
+        return ["• No order legs captured"]
+
+    status_icon = {
+        "filled": "✅",
+        "partial": "🟡",
+        "failed": "❌",
+    }
+
+    lines: list[str] = []
+    by_phase = {
+        "SELL": [l for l in legs if str(l.side).upper() == "SELL"],
+        "BUY": [l for l in legs if str(l.side).upper() == "BUY"],
+    }
+
+    for phase in ("SELL", "BUY"):
+        phase_legs = sorted(by_phase[phase], key=lambda l: str(l.symbol or ""))
+        if not phase_legs:
+            continue
+        lines.append(f"📦 *{phase} Legs* ({len(phase_legs)})")
+        for leg in phase_legs[:20]:
+            st = str(leg.status or "unknown").lower()
+            icon = status_icon.get(st, "⚪")
+            req = int(leg.requested_qty or 0)
+            filled = int(leg.filled_qty or 0)
+            rem = int(leg.remaining_qty or 0)
+            px = price_map.get((str(leg.phase or "").lower(), str(leg.symbol or "").upper()))
+
+            line = f"{icon} {leg.symbol}: {filled}/{req}"
+            if rem > 0:
+                line += f" (rem {rem})"
+            line += f" | {st.upper()}"
+            if px and px > 0:
+                line += f" | {_fmt_money(px)}"
+            lines.append(line)
+
+            if leg.error_message and st != "filled":
+                lines.append(f"   ↳ {str(leg.error_message)[:90]}")
+
+        if len(phase_legs) > 20:
+            lines.append(f"… and {len(phase_legs) - 20} more {phase.lower()} legs")
+        lines.append("")
+
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _build_outcome_message(entry: RebalanceQueue, result: Any, db) -> str:
+    status = str(entry.status or "").lower()
+    emoji = {"done": "🎉", "skipped": "⏭️", "failed": "🚨"}.get(status, "ℹ️")
+    title = {"done": "Rebalance Completed", "skipped": "Rebalance Delayed", "failed": "Rebalance Failed"}.get(status, "Rebalance Update")
+
+    lines = [
+        f"{emoji} *{title}*",
+        "",
+        f"🧠 *Strategy:* {_short_id(entry.strat_id)}",
+        f"📍 *Queue ID:* {_short_id(entry.id)}",
+        f"🕒 *Completed:* {_fmt_dt(entry.completed_at or now_ist())}",
+        f"📝 *Reason:* {_format_reason(entry.reason or getattr(result, 'reason', ''))}",
+    ]
+
+    history = (
+        db.query(RebalancingHistory)
+        .filter(RebalancingHistory.queue_id == entry.id)
+        .order_by(RebalancingHistory.started_at.desc())
+        .first()
+    )
+
+    if not history:
+        return "\n".join(lines)
+
+    lines.extend([
+        "",
+        "💰 *Capital Snapshot*",
+        f"• Before Cash: {_fmt_money(history.pre_cash)}",
+        f"• After Cash: {_fmt_money(history.post_cash)}",
+        f"• Before Total: {_fmt_money(history.pre_total)}",
+        f"• After Total: {_fmt_money(history.post_total)}",
+    ])
+
+    legs = (
+        db.query(RebalanceOrderLeg)
+        .filter(RebalanceOrderLeg.history_id == history.id)
+        .order_by(RebalanceOrderLeg.side.asc(), RebalanceOrderLeg.symbol.asc())
+        .all()
+    )
+
+    price_map: dict[tuple[str, str], float] = {}
+    try:
+        orders = json.loads(history.orders_json or "[]")
+        if isinstance(orders, list):
+            for ev in orders:
+                if not isinstance(ev, dict):
+                    continue
+                phase = str(ev.get("phase", "")).lower()
+                ticker = str(ev.get("ticker", "")).upper()
+                px = float(ev.get("tradedPrice", 0) or 0)
+                if phase in {"sell", "buy"} and ticker and px > 0:
+                    price_map[(phase, ticker)] = px
+    except Exception:
+        pass
+
+    if legs:
+        filled = sum(1 for leg in legs if str(leg.status).lower() == "filled")
+        partial = sum(1 for leg in legs if str(leg.status).lower() == "partial")
+        failed = sum(1 for leg in legs if str(leg.status).lower() == "failed")
+        lines.extend([
+            "",
+            "📊 *Leg Summary*",
+            f"• Total: {len(legs)} | ✅ {filled} | 🟡 {partial} | ❌ {failed}",
+            "",
+            *_build_legs_section(legs, price_map),
+        ])
+
+    return "\n".join(lines)
 
 
 def _get_any_active_fyers(db):
@@ -722,7 +920,7 @@ def queue_rebalances() -> None:
                 if existing.status == "skipped":
                     _send_whatsapp_sync(
                         strat.user.whatsapp_number,
-                        f"🔄 Rebalancing retry today for {strat.strat_id}!\nPrevious attempt was delayed. Please login.",
+                        _build_retry_message(strat, int(existing.retry_count or 0)),
                         "Rebalancing Retry Reminder",
                     )
                 logger.info(
@@ -759,7 +957,7 @@ def queue_rebalances() -> None:
 
             _send_whatsapp_sync(
                 strat.user.whatsapp_number,
-                f"📋 Rebalancing scheduled today for {strat.strat_id}!\nPlease login to authorize.",
+                _build_queue_message(strat),
                 "Rebalancing Scheduled",
             )
 
@@ -907,13 +1105,9 @@ def drain_rebalance_queue() -> None:
 
                 db.commit()
 
-                # Send WhatsApp completion notification
-                if entry.status == "done":
-                    msg = f"✅ Rebalancing Complete!\nStrategy: {entry.strategy.strat_id}"
-                elif entry.status == "skipped":
-                    msg = f"⏭️ Rebalancing Delayed\nReason: {entry.reason}\nWill retry tomorrow."
-                elif entry.status == "failed":
-                    msg = f"❌ Rebalancing Failed\nReason: {entry.reason}\nContact support."
+                # Send WhatsApp completion notification with leg-level summary.
+                if entry.status in {"done", "skipped", "failed"}:
+                    msg = _build_outcome_message(entry, result, db)
                 else:
                     msg = None
 
