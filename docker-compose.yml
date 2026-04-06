@@ -102,6 +102,10 @@ services:
     # Binds internally 80 to your Local PC's 80.
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/certs:/etc/nginx/certs:ro
 
 volumes:
   mat_pgdata:
