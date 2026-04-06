@@ -39,11 +39,14 @@ async def send_whatsapp_notification(
         - Retries with exponential backoff: 1s, 2s, 4s
         - All errors are logged but don't raise exceptions
     """
-    if not phone or not settings.EVOLUTION_API_URL or not settings.EVOLUTION_API_KEY:
+    api_url = (settings.evolution_api_url or "").rstrip("/")
+    api_key = settings.evolution_api_key or ""
+
+    if not phone or not api_url or not api_key:
         logger.debug(
             "send_whatsapp_notification: skipped (missing config) phone=%s api_url=%s",
             bool(phone),
-            bool(settings.EVOLUTION_API_URL),
+            bool(api_url),
         )
         return False
 
@@ -59,11 +62,11 @@ async def send_whatsapp_notification(
                 payload = {
                     "jid": f"{phone.lstrip('+')}@s.whatsapp.net",
                     "message": message,
-                    "apikey": settings.EVOLUTION_API_KEY,
+                    "apikey": api_key,
                 }
 
                 resp = await client.post(
-                    f"{settings.EVOLUTION_API_URL}/message/sendText",
+                    f"{api_url}/message/sendText",
                     json=payload,
                 )
 
