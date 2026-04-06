@@ -64,14 +64,6 @@ services:
       timeout: 10s
       retries: 3
 
-  evolution-manager:
-    image: evoapicloud/evolution-manager:latest
-    container_name: evolution-manager
-    restart: always
-    depends_on:
-      evolution-api:
-        condition: service_started
-
   backend:
     build:
       context: .
