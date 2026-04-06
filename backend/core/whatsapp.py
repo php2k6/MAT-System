@@ -7,6 +7,7 @@ Handles retries and graceful failures.
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -14,6 +15,11 @@ import httpx
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_number(phone: str) -> str:
+    # Evolution v2 expects numeric string in the `number` field.
+    return re.sub(r"\D", "", phone or "")
 
 
 async def send_whatsapp_notification(
@@ -41,6 +47,7 @@ async def send_whatsapp_notification(
     """
     api_url = (settings.evolution_api_url or "").rstrip("/")
     api_key = settings.evolution_api_key or ""
+    instance_name = (settings.evolution_api_instance or "").strip()
 
     if not phone or not api_url or not api_key:
         logger.debug(
@@ -53,6 +60,7 @@ async def send_whatsapp_notification(
     # Normalize phone: ensure it starts with +
     if not phone.startswith("+"):
         phone = f"+{phone}"
+    number = _normalize_number(phone)
 
     log_prefix = f"[WhatsApp:{phone}]"
 
@@ -60,15 +68,31 @@ async def send_whatsapp_notification(
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 payload = {
-                    "jid": f"{phone.lstrip('+')}@s.whatsapp.net",
-                    "message": message,
+                    "number": number,
+                    "text": message,
+                    "delay": 0,
+                }
+                headers = {
                     "apikey": api_key,
                 }
 
-                resp = await client.post(
-                    f"{api_url}/message/sendText",
-                    json=payload,
-                )
+                # Evolution API v2 commonly exposes instance-scoped routes.
+                endpoint_candidates = []
+                if instance_name:
+                    endpoint_candidates.append(f"{api_url}/message/sendText/{instance_name}")
+                endpoint_candidates.append(f"{api_url}/message/sendText")
+
+                resp = None
+                for endpoint in endpoint_candidates:
+                    resp = await client.post(endpoint, json=payload, headers=headers)
+                    if resp.status_code in (200, 201):
+                        break
+                    # Some builds accept apikey in body for backward compatibility.
+                    if resp.status_code in (401, 403, 404):
+                        payload_with_key = {**payload, "apikey": api_key}
+                        resp = await client.post(endpoint, json=payload_with_key, headers=headers)
+                        if resp.status_code in (200, 201):
+                            break
 
                 if resp.status_code in (200, 201):
                     logger.info(
@@ -81,11 +105,12 @@ async def send_whatsapp_notification(
                     return True
 
                 logger.warning(
-                    "%s API returned status=%d (attempt %d/%d) response=%s",
+                    "%s API returned status=%d (attempt %d/%d) endpoint=%s response=%s",
                     log_prefix,
                     resp.status_code,
                     attempt + 1,
                     max_retries,
+                    endpoint_candidates[0] if endpoint_candidates else "n/a",
                     resp.text[:200],
                 )
 
