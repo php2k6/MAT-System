@@ -178,7 +178,7 @@ def _extract_positions(positions_resp: dict) -> dict[str, dict]:
         if not ticker:
             continue
 
-        qty = abs(int(row.get("netQty", row.get("qty", 0)) or 0))
+        qty = int(row.get("netQty", row.get("qty", 0)) or 0)
         if qty <= 0:
             continue
 
@@ -215,7 +215,7 @@ def _extract_positions_detailed(positions_resp: dict) -> dict[str, dict]:
         if not ticker:
             continue
 
-        qty = abs(int(row.get("netQty", row.get("qty", 0)) or 0))
+        qty = int(row.get("netQty", row.get("qty", 0)) or 0)
         if qty <= 0:
             continue
 

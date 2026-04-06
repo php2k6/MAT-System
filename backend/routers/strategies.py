@@ -485,6 +485,12 @@ def archive_rebalance_history(
     row.completed_at = now_ist()
     db.commit()
 
+    try:
+        from backend.scheduler import broker_reconcile_snapshot
+        broker_reconcile_snapshot()
+    except Exception:
+        logger.exception("strategy.rebalance_history.archive broker_reconcile failed (non-fatal)")
+
     return {
         "success": True,
         "historyId": str(row.id),
@@ -676,6 +682,13 @@ def repair_rebalance_history(
     row.completed_at = now_ist() if unresolved_after == 0 else row.completed_at
 
     db.commit()
+
+    try:
+        from backend.scheduler import broker_reconcile_snapshot
+        broker_reconcile_snapshot()
+    except Exception:
+        logger.exception("strategy.rebalance_history.repair broker_reconcile failed (non-fatal)")
+
     return {
         "success": True,
         "historyId": str(row.id),
