@@ -43,7 +43,8 @@ services:
     environment:
       SERVER_PORT: 8080
       SERVER_CORS_ORIGIN: "*"
-      DATABASE_CONNECTION_URI: "postgres://postgres:yourpassword@db:5432/evolution"
+      DATABASE_PROVIDER: "postgresql"
+      DATABASE_CONNECTION_URI: "postgres://postgres:yourpassword@db:5432/mat_system"
       REDIS_URI: "redis://redis:6379"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"] 
