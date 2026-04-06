@@ -190,7 +190,7 @@ def _extract_positions(positions_resp: dict) -> dict[str, dict]:
             continue
 
         qty = int(row.get("netQty", row.get("qty", 0)) or 0)
-        if qty <= 0:
+        if qty == 0:
             continue
 
         avg = float(row.get("netAvg", row.get("avgPrice", row.get("buyAvg", 0))) or 0)
@@ -227,7 +227,7 @@ def _extract_positions_detailed(positions_resp: dict) -> dict[str, dict]:
             continue
 
         qty = int(row.get("netQty", row.get("qty", 0)) or 0)
-        if qty <= 0:
+        if qty == 0:
             continue
 
         avg = float(row.get("netAvg", row.get("avgPrice", row.get("buyAvg", 0))) or 0)
