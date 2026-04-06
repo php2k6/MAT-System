@@ -23,7 +23,7 @@ A complete, step-by-step guide to deploying the MAT System (Momentum Automated T
 
 ## 1. Architecture Overview
 
-Docker Compose orchestrates **4 isolated containers** on a single private network:
+Docker Compose orchestrates **5 isolated containers** on a single private network:
 
 ```
                     ┌─────────────────────────────────────────────┐
@@ -39,7 +39,12 @@ Docker Compose orchestrates **4 isolated containers** on a single private networ
                     │         ┌────▼────┐         ┌────▼────┐    │
                     │         │  Redis  │         │Postgres │    │
                     │         │ (Cache) │         │  (DB)   │    │
-                    │         └─────────┘         └─────────┘    │
+                    │         └────┬────┘         └─────────┘    │
+                    │              │                               │
+                    │         ┌────▼──────────┐                    │
+                    │         │ Evolution API │                    │
+                    │         │ (WhatsApp)    │                    │
+                    │         └───────────────┘                    │
                     └─────────────────────────────────────────────┘
 ```
 
@@ -49,6 +54,7 @@ Docker Compose orchestrates **4 isolated containers** on a single private networ
 | **Backend (FastAPI)** | Python API, scheduler, Fyers engine | ❌ Internal only |
 | **PostgreSQL** | Users, strategies, trades, holdings | ❌ Internal only |
 | **Redis** | Live price cache (sub-100ms LTP streaming) | ❌ Internal only |
+| **Evolution API** | WhatsApp message gateway | ❌ Internal only |
 
 > **Security:** Only Nginx is publicly accessible. The database, cache, and backend API are completely invisible to the internet. Nginx acts as the sole edge gateway.
 
@@ -133,12 +139,16 @@ cd MAT-System
 
 ## 5. Environment Variables
 
-### 5.1 Understanding the Two `.env` Files
+### 5.1 Understanding Local `.env` and Compose `.env`
 
 | File | Purpose | When is it read? |
 |---|---|---|
-| `backend/.env` | Database URLs, API keys, JWT secrets, scheduler config | **Runtime** — read when container starts |
+| `backend/.env` | Local backend runtime config (API keys, scheduler, DB URL, WhatsApp config) | **Runtime** |
+| `.env` (repo root) | Docker Compose variable interpolation / overrides | **Before containers start** |
 | `frontend/.env` | `VITE_API_BASE_URL` | **Build time** — baked into JavaScript during `npm run build` |
+
+For local development, update `backend/.env`.
+For docker-compose deployments, keep `backend/.env` as app runtime config and optionally use root `.env` for compose-level substitutions.
 
 ### 5.2 Frontend `.env` (Set Once, Never Change)
 
@@ -307,7 +317,27 @@ This command:
 3. Installs all Python packages (`requirements.txt`)
 4. Compiles the React frontend with Vite
 5. Configures Nginx as the reverse proxy
-6. Boots all 4 containers on an isolated Docker network
+6. Boots all 5 containers on an isolated Docker network
+
+### 6.1 Link WhatsApp in Evolution API
+
+After `docker compose up -d --build` completes:
+
+1. Open `http://localhost:8080`
+2. Create an Evolution instance
+3. Scan the QR from WhatsApp mobile app (`Linked Devices`)
+4. Copy the generated API key
+5. Set `EVOLUTION_API_KEY` in `backend/.env`
+6. Restart backend:
+
+```bash
+sudo docker compose restart backend
+```
+
+Use the correct API URL per runtime:
+
+- Local backend run: `EVOLUTION_API_URL=http://localhost:8080`
+- Backend in docker-compose: `EVOLUTION_API_URL=http://evolution-api:8080`
 
 ### Initial Data Seeding
 After the first launch (when the database is empty), you MUST seed the tickers and historical price data:
@@ -324,14 +354,28 @@ sudo docker exec mat-backend python "data ingestion/ingest_all.py"
 sudo docker ps
 ```
 
-You should see 4 containers with status `Up`:
+You should see 5 containers with status `Up`:
 ```
 CONTAINER ID   IMAGE               STATUS                    NAMES
 abc123...      mat-system-frontend  Up 2 minutes              mat-frontend
 def456...      mat-system-backend   Up 2 minutes              mat-backend
 ghi789...      redis:7-alpine       Up 2 minutes (healthy)    mat-redis
 jkl012...      postgres:15-alpine   Up 2 minutes (healthy)    mat-db
+mno345...      atendai/evolution-api Up 2 minutes (healthy)   evolution-api
 ```
+
+### 6.2 Save User WhatsApp Number and Send Test Message
+
+1. Login to MAT
+2. Open Profile page
+3. Enter receiver number in WhatsApp field (example: `+9198XXXXXXXX`)
+4. Click `Save WhatsApp`
+5. Click `Send Test Message`
+
+Related API endpoints:
+
+- `PUT /api/auth/profile`
+- `POST /api/auth/testing/whatsapp` (requires `ENABLE_TESTING_ENDPOINTS=true`)
 
 ### Quick Test
 ```bash

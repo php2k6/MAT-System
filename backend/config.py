@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     yahoo_fetch_retry_delay_seconds: float = 1.0
     yahoo_max_internal_gap_days: int = 40
 
+    # Evolution API (WhatsApp notifications)
+    evolution_api_url: str = ""
+    evolution_api_key: str = ""
+
     class Config:
         env_file = str(_ENV_FILE)
 

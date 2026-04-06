@@ -15,11 +15,12 @@ from backend.database import Base
 class User(Base):
     __tablename__ = "users"
 
-    user_id    = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name       = Column(Text, nullable=False)
-    password   = Column(Text, nullable=False)
-    email      = Column(VARCHAR(255), nullable=False, unique=True)
-    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    user_id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name            = Column(Text, nullable=False)
+    password        = Column(Text, nullable=False)
+    email           = Column(VARCHAR(255), nullable=False, unique=True)
+    whatsapp_number = Column(VARCHAR(20), nullable=True)  # +91XXXXXXXXXX format
+    created_at      = Column(TIMESTAMP, server_default=func.now(), nullable=False)
 
     # relationships
     broker_sessions  = relationship("BrokerSession",  back_populates="user", cascade="all, delete-orphan")
@@ -178,7 +179,8 @@ class RebalanceQueue(Base):
 
     status       = Column(VARCHAR(20),  nullable=False, default="pending")  # pending | in_progress | done | failed | skipped
     reason       = Column(Text,         nullable=True)                       # e.g. "LC_DETECTED", "MARKET_CLOSED"
-    retry_count  = Column(SmallInteger, nullable=False, default=0)
+    retry_count               = Column(SmallInteger, nullable=False, default=0)
+    last_notification_sent_at = Column(TIMESTAMP, nullable=True)
 
     queued_at    = Column(TIMESTAMP, nullable=False, server_default=func.now())
     attempted_at = Column(TIMESTAMP, nullable=True)

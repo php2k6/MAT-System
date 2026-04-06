@@ -14,8 +14,15 @@ export default function Profile() {
 
   useEffect(() => { document.title = "Profile — MAT System"; }, []);
 
+  const [whatsappNumber, setWhatsappNumber] = useState("");
+  const [savingWhatsApp, setSavingWhatsApp] = useState(false);
+  const [testingWhatsApp, setTestingWhatsApp] = useState(false);
   const [formData, setFormData] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setWhatsappNumber(user?.whatsappNumber || "");
+  }, [user?.whatsappNumber]);
 
   const handleChange = (e) => {
     setFormData(f => ({ ...f, [e.target.name]: e.target.value }));
@@ -56,6 +63,42 @@ export default function Profile() {
     }
   };
 
+  const handleSaveWhatsApp = async (e) => {
+    e.preventDefault();
+    setSavingWhatsApp(true);
+    try {
+      const resp = await axios.put(
+        `${API_BASE_URL}/auth/profile`,
+        { whatsappNumber: whatsappNumber || null },
+        { withCredentials: true }
+      );
+      toast.success(resp.data.message || "Profile updated successfully.");
+      await refresh();
+    } catch (err) {
+      const msg = err.response?.data?.detail?.message || err.response?.data?.message || err.message || "Failed to update profile.";
+      toast.error(msg);
+    } finally {
+      setSavingWhatsApp(false);
+    }
+  };
+
+  const handleTestWhatsApp = async () => {
+    setTestingWhatsApp(true);
+    try {
+      const resp = await axios.post(
+        `${API_BASE_URL}/auth/testing/whatsapp`,
+        { phone: whatsappNumber || null },
+        { withCredentials: true }
+      );
+      toast.success(resp.data.message || "WhatsApp test sent.");
+    } catch (err) {
+      const msg = err.response?.data?.detail?.message || err.response?.data?.message || err.message || "WhatsApp test failed.";
+      toast.error(msg);
+    } finally {
+      setTestingWhatsApp(false);
+    }
+  };
+
   return (
     <>
       <style>{`
@@ -91,6 +134,11 @@ export default function Profile() {
           padding: 24px;
           margin-bottom: 24px;
           box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+        }
+
+        .pf-card-highlight {
+          border-left: 4px solid #1b6f3e;
+          background: linear-gradient(180deg, #ffffff 0%, #f9fcfa 100%);
         }
 
         .pf-card-title {
@@ -178,6 +226,28 @@ export default function Profile() {
         .pf-btn:active:not(:disabled) { background: #000; }
         .pf-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
+        .pf-btn-secondary {
+          background: #f4f4f4;
+          color: #222;
+          border: 1px solid #ddd;
+        }
+        .pf-btn-secondary:hover:not(:disabled) {
+          background: #ececec;
+        }
+
+        .pf-inline-actions {
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+
+        .pf-help {
+          font-size: 12px;
+          color: #666;
+          margin-top: 8px;
+          line-height: 1.4;
+        }
+
         .pf-spinner {
           width: 14px; height: 14px;
           border: 2px solid rgba(255,255,255,0.3);
@@ -205,6 +275,42 @@ export default function Profile() {
             <span className="pf-info-label">Email Address</span>
             <span className="pf-info-value">{user?.email || "—"}</span>
           </div>
+        </div>
+
+        <div className="pf-card pf-card-highlight">
+          <div className="pf-card-title">WhatsApp Notifications</div>
+          <form onSubmit={handleSaveWhatsApp}>
+            <div className="pf-field">
+              <label className="pf-label" htmlFor="whatsappNumber">WhatsApp Number</label>
+              <input
+                id="whatsappNumber"
+                type="text"
+                name="whatsappNumber"
+                value={whatsappNumber}
+                onChange={(e) => setWhatsappNumber(e.target.value)}
+                className="pf-input"
+                placeholder="+91XXXXXXXXXX"
+                autoComplete="tel"
+              />
+              <div className="pf-help">
+                Used for rebalance reminders and completion status alerts.
+              </div>
+            </div>
+
+            <div className="pf-inline-actions">
+              <button type="submit" className="pf-btn" disabled={savingWhatsApp}>
+                {savingWhatsApp ? <><div className="pf-spinner" /><span>Saving…</span></> : "Save WhatsApp"}
+              </button>
+              <button
+                type="button"
+                className="pf-btn pf-btn-secondary"
+                disabled={testingWhatsApp || !whatsappNumber}
+                onClick={handleTestWhatsApp}
+              >
+                {testingWhatsApp ? <><div className="pf-spinner" /><span>Sending…</span></> : "Send Test Message"}
+              </button>
+            </div>
+          </form>
         </div>
 
         {/* Security / Password Change */}

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -33,6 +34,7 @@ from backend.core.security import decrypt_token
 from backend.core.fyers_funds import extract_available_cash
 from backend.core.time_utils import now_ist
 from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
+from backend.core.whatsapp import send_whatsapp_notification
 from backend.database import SessionLocal
 from backend.models import BrokerSession, Holdings, Portfolio, Positions, RebalanceQueue, StockPrice, StockTicker, Strategy
 from fyers_apiv3 import fyersModel
@@ -113,6 +115,15 @@ def _is_nse_cm_open(fyers: fyersModel.FyersModel) -> bool:
 def _iter_chunks(items: list[str], size: int):
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+def _send_whatsapp_sync(phone: str | None, message: str, title: str) -> None:
+    if not phone:
+        return
+    try:
+        asyncio.run(send_whatsapp_notification(phone, message, title=title))
+    except Exception:
+        logger.exception("scheduler WhatsApp send failed title=%s", title)
 
 
 def _get_any_active_fyers(db):
@@ -708,6 +719,12 @@ def queue_rebalances() -> None:
                 .first()
             )
             if existing:
+                if existing.status == "skipped":
+                    _send_whatsapp_sync(
+                        strat.user.whatsapp_number,
+                        f"🔄 Rebalancing retry today for {strat.strat_id}!\nPrevious attempt was delayed. Please login.",
+                        "Rebalancing Retry Reminder",
+                    )
                 logger.info(
                     "queue_rebalances: strat %s already in queue (status=%s), skipping",
                     strat.strat_id, existing.status,
@@ -739,6 +756,12 @@ def queue_rebalances() -> None:
                 queued_at=now_ist(),
             )
             db.add(entry)
+
+            _send_whatsapp_sync(
+                strat.user.whatsapp_number,
+                f"📋 Rebalancing scheduled today for {strat.strat_id}!\nPlease login to authorize.",
+                "Rebalancing Scheduled",
+            )
 
             # Advance next_rebalance_date
             strat.next_rebalance_date = _advance_date(
@@ -860,6 +883,7 @@ def drain_rebalance_queue() -> None:
                         + (" | " + json.dumps(result.details) if result.details else "")
                     )
                     entry.retry_count = (entry.retry_count or 0) + 1
+                    entry.last_notification_sent_at = now
                     logger.info(
                         "drain_rebalance_queue: skipped entry=%s reason=%s",
                         entry_id,
@@ -869,10 +893,12 @@ def drain_rebalance_queue() -> None:
                     entry.status       = "done"
                     entry.reason       = result.reason or entry.reason
                     entry.completed_at = now_ist()
+                    entry.last_notification_sent_at = now
                     logger.info("drain_rebalance_queue: done entry=%s", entry_id)
                 else:
                     entry.status = "failed"
                     entry.reason = result.reason
+                    entry.last_notification_sent_at = now
                     logger.warning(
                         "drain_rebalance_queue: failed entry=%s reason=%s",
                         entry_id,
@@ -880,6 +906,23 @@ def drain_rebalance_queue() -> None:
                     )
 
                 db.commit()
+
+                # Send WhatsApp completion notification
+                if entry.status == "done":
+                    msg = f"✅ Rebalancing Complete!\nStrategy: {entry.strategy.strat_id}"
+                elif entry.status == "skipped":
+                    msg = f"⏭️ Rebalancing Delayed\nReason: {entry.reason}\nWill retry tomorrow."
+                elif entry.status == "failed":
+                    msg = f"❌ Rebalancing Failed\nReason: {entry.reason}\nContact support."
+                else:
+                    msg = None
+
+                if msg:
+                    _send_whatsapp_sync(
+                        entry.strategy.user.whatsapp_number,
+                        msg,
+                        f"Rebalancing {entry.status.title()}",
+                    )
 
                 # Immediately sync broker ground truth after a successful rebalance.
                 # broker_reconcile_snapshot() opens its own session — runs cleanly

@@ -26,3 +26,12 @@ class UserOut(BaseModel):
 class ChangePasswordRequest(BaseModel):
     currentPassword: str
     newPassword: str
+
+
+class UpdateProfileRequest(BaseModel):
+    whatsappNumber: str | None = None
+
+
+class TestWhatsAppRequest(BaseModel):
+    phone: str | None = None
+    message: str | None = None

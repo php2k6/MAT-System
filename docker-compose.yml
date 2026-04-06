@@ -31,6 +31,26 @@ services:
       timeout: 5s
       retries: 5
 
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: evolution-api
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      SERVER_CORS_ORIGIN: "*"
+      DATABASE_CONNECTION_URI: "postgres://postgres:yourpassword@db:5432/evolution"
+      REDIS_URI: "redis://redis:6379"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"] || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   backend:
     build:
       context: .
@@ -43,6 +63,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      evolution-api:
+        condition: service_healthy
     # Uses the shared exact env configurations
     env_file:
       - backend/.env
@@ -50,6 +72,8 @@ services:
     environment:
       - DATABASE_URL=postgresql+psycopg2://postgres:yourpassword@db:5432/mat_system
       - REDIS_URL=redis://redis:6379/0
+      - EVOLUTION_API_URL=http://evolution-api:8080
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-}
     # Map logs dynamically so they stream securely into your host machine's /logs folder
     volumes:
       - ./logs:/app/logs
