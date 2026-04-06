@@ -78,6 +78,7 @@ EXCHANGE_CHARGE = max(float(settings.mat_exchange_charge_rate), 0.0)
 SEBI_CHARGE     = max(float(settings.mat_sebi_charge_rate), 0.0)
 GST_RATE        = max(float(settings.mat_gst_rate), 0.0)
 STAMP_DUTY_BUY  = max(float(settings.mat_stamp_duty_buy_rate), 0.0)
+DP_CHARGE_SELL_SCRIPT = 14.75
 CASH_BUFFER     = min(max(float(settings.mat_cash_buffer), 0.0), 0.5)
 
 # ── Momentum constants (matching backtest) ────────────────────────────────────
@@ -119,12 +120,14 @@ def _from_fyers(symbol: str) -> str:
 
 
 def _sell_cost(value: float) -> float:
+    if value <= 0:
+        return 0.0
     brokerage = min(value * BROKERAGE, 20)
     exch      = value * EXCHANGE_CHARGE
     sebi      = value * SEBI_CHARGE
     gst       = (brokerage + exch) * GST_RATE
     stt       = value * STT_SELL
-    return brokerage + exch + sebi + gst + stt
+    return brokerage + exch + sebi + gst + stt + DP_CHARGE_SELL_SCRIPT
 
 
 def _buy_cost(value: float) -> float:

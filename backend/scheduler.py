@@ -33,6 +33,7 @@ from backend.core.live_prices import get_live_price_store
 from backend.core.market_feed import get_market_feed_manager
 from backend.core.security import decrypt_token
 from backend.core.fyers_funds import extract_available_cash
+from backend.core.portfolio_merge import merge_holdings_positions
 from backend.core.time_utils import now_ist
 from backend.core.yahoo_daily_sync import run_yahoo_daily_sync
 from backend.core.whatsapp import send_whatsapp_notification
@@ -756,7 +757,14 @@ def eod_mtm_from_yahoo_prices() -> dict:
                 .filter(Holdings.strat_id == strat.strat_id)
                 .all()
             )
-            tickers = [h.ticker for h in holdings if int(h.qty or 0) > 0]
+            positions = (
+                db.query(Positions)
+                .filter(Positions.strat_id == strat.strat_id)
+                .all()
+            )
+
+            merged, _sale_scripts = merge_holdings_positions(holdings, positions)
+            tickers = [t for t, row in merged.items() if int(row.get("qty", 0) or 0) > 0]
             if not tickers:
                 cash = float(strat.unused_capital or 0)
                 strat.market_value = cash
@@ -797,17 +805,28 @@ def eod_mtm_from_yahoo_prices() -> dict:
 
             equity = 0.0
             missing = 0
-            for h in holdings:
-                qty = int(h.qty or 0)
+            for ticker, row in merged.items():
+                qty = int(row.get("qty", 0) or 0)
                 if qty <= 0:
                     continue
-                px = float(price_map.get(h.ticker, 0.0) or 0.0)
+                px = float(price_map.get(ticker, 0.0) or 0.0)
                 if px <= 0:
                     missing += 1
-                    px = float(h.last_price or 0.0)
+                    px = float(row.get("last_price", 0.0) or 0.0)
+                if px > 0:
+                    equity += qty * px
+
+            # Keep Holdings.last_price aligned with merged valuation prices for UI snapshot.
+            holdings_by_ticker = {str(h.ticker).upper(): h for h in holdings}
+            for ticker, row in merged.items():
+                h = holdings_by_ticker.get(str(ticker).upper())
+                if not h:
+                    continue
+                px = float(price_map.get(ticker, 0.0) or 0.0)
+                if px <= 0:
+                    px = float(row.get("last_price", 0.0) or 0.0)
                 if px > 0:
                     h.last_price = px
-                    equity += qty * px
 
             cash = float(strat.unused_capital or 0)
             total_value = equity + cash

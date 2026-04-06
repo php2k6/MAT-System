@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from backend.config import settings
+from backend.core.portfolio_merge import invested_from_merged, merge_holdings_positions
 from backend.core.deps import get_current_user
 from backend.database import get_db
 from backend.models import Holdings, Portfolio, Positions, RebalanceQueue, StockTicker, Strategy, User
@@ -71,7 +72,7 @@ def get_portfolio(
         for r in db.query(StockTicker.ticker, StockTicker.name).all()
     }
 
-    # ── Holdings ──────────────────────────────────────────────────────────────
+    # ── Raw Holdings / Positions ──────────────────────────────────────────────
     holding_rows = (
         db.query(Holdings)
         .filter(Holdings.strat_id == strategy.strat_id)
@@ -79,15 +80,23 @@ def get_portfolio(
         .all()
     )
 
+    position_rows = (
+        db.query(Positions)
+        .filter(Positions.strat_id == strategy.strat_id)
+        .order_by(Positions.ticker.asc())
+        .all()
+    )
+
+    # Effective merge only for invested summary; payload rows remain separate.
+    merged_portfolio, _sale_scripts_count = merge_holdings_positions(holding_rows, position_rows)
+
     holdings_payload = []
-    invested_total   = 0.0
+    invested_total = invested_from_merged(merged_portfolio, _sale_scripts_count)
 
     for h in holding_rows:
         qty       = int(h.qty or 0)
         avg_price = _num(h.avg_price)
         ltp       = _num(h.last_price)
-        cost      = qty * avg_price
-        invested_total += cost
 
         holdings_payload.append({
             "symbol":   h.ticker,
@@ -102,14 +111,7 @@ def get_portfolio(
         strategy.strat_id, len(holding_rows),
     )
 
-    # ── Positions ─────────────────────────────────────────────────────────────
-    position_rows = (
-        db.query(Positions)
-        .filter(Positions.strat_id == strategy.strat_id)
-        .order_by(Positions.ticker.asc())
-        .all()
-    )
-
+    # ── Raw positions payload (kept for transparency/debugging) ──────────────
     positions_payload = []
     for p in position_rows:
         qty       = int(p.qty or 0)
