@@ -139,16 +139,14 @@ cd MAT-System
 
 ## 5. Environment Variables
 
-### 5.1 Understanding Local `.env` and Compose `.env`
+### 5.1 Environment Files Used
 
 | File | Purpose | When is it read? |
 |---|---|---|
 | `backend/.env` | Local backend runtime config (API keys, scheduler, DB URL, WhatsApp config) | **Runtime** |
-| `.env` (repo root) | Docker Compose variable interpolation / overrides | **Before containers start** |
 | `frontend/.env` | `VITE_API_BASE_URL` | **Build time** — baked into JavaScript during `npm run build` |
 
-For local development, update `backend/.env`.
-For docker-compose deployments, keep `backend/.env` as app runtime config and optionally use root `.env` for compose-level substitutions.
+For local development and docker-compose deployments, use only `backend/.env` for backend settings.
 
 ### 5.2 Frontend `.env` (Set Once, Never Change)
 

@@ -73,7 +73,6 @@ services:
       - DATABASE_URL=postgresql+psycopg2://postgres:yourpassword@db:5432/mat_system
       - REDIS_URL=redis://redis:6379/0
       - EVOLUTION_API_URL=http://evolution-api:8080
-      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-}
     # Map logs dynamically so they stream securely into your host machine's /logs folder
     volumes:
       - ./logs:/app/logs
